@@ -33,6 +33,7 @@ async function makeFixture(version, name = '@acme/demo-pkg') {
   await writeFile(join(dir, 'lib', 'util.js'), 'export const y = 2\n')
   await writeFile(join(dir, 'node_modules', 'junk', 'index.js'), 'junk\n')
   await writeFile(join(dir, '.npmrc'), 'secret=1\n')
+  await writeFile(join(dir, 'CHANGELOG.md'), `# Changelog\n\n## ${version}\n\n- fixture change for ${version}\n`)
   return dir
 }
 
@@ -77,7 +78,7 @@ try {
   const fixture = await makeFixture('1.2.3')
   const preview = await service.projectPreview({ dir: fixture })
   assert.equal(preview.name, '@acme/demo-pkg')
-  assert.equal(preview.fileCount, 4)
+  assert.equal(preview.fileCount, 5)
   assert.equal(preview.files.some((file) => file.path.includes('node_modules')), false)
   log('project preview packs the right files')
 
@@ -207,6 +208,11 @@ try {
   assert.equal(combined.record.targets[1].release.tag, 'v1.2.5')
   assert.ok(github.state.releases.size >= 1)
   assert.ok(github.state.assets.length >= 1)
+  const releaseBodies = [...github.state.releases.values()].map((release) => String(release.body ?? ''))
+  assert.ok(releaseBodies.every((body) => !body.includes('Published from')), 'release notes must not expose local paths')
+  assert.ok(releaseBodies.every((body) => !body.includes('C:\\')), 'release notes must not expose local drives')
+  assert.ok(releaseBodies.some((body) => body.includes('fixture change for 1.2.5')), 'release notes should use the version changelog')
+  assert.ok(releaseBodies.some((body) => body.includes('npm install @acme/demo-pkg@1.2.5')), 'release notes should include install command')
   assert.deepEqual(combined.record.targets.map((target) => target.target), ['npm', 'github-release'])
   log('combined publish creates the repo, pushes, releases and attaches the tarball')
 
