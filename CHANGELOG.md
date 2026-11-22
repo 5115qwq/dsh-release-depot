@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.3
+
+### 修复
+
+- npm publish 返回 `202 Accepted` 时，面板和 AI 工具明确显示“已受理，registry 同步中”，不再直接称为“发布完成”。
+- GitHub Release 的自动安装段只在 npm 目标确实成功时出现，避免链接到不存在的包版本。
+- 删除整个 npm 包现在在 `version: '*'` 和“仅剩一个版本”两种情况下都强制要求 `confirmName`，防止误删整包。
+- 修复 AI 工具 `add-owner` / `remove-owner` 的变量遮蔽错误（之前两个动作都会抛 ReferenceError）。
+- npm 访问级别统一为 `public` / `restricted`，与 npm `access set status` 协议一致；面板、工具、协议不再出现 private/restricted 混用。
+- 代理 URL 中的用户名/密码在诊断信息中打码，不再进入面板或 AI 工具输出。
+- 工具结果改为结构化 `data` 对象，去掉重复 JSON 编码；超长文本附带截断标记。
+- npm Token 列表改为跟随分页，Token 数量超过一页时仍能匹配到期日。
+- 修复 GitHub 仓库列表缓存忽略 `limit` 的问题；dist-tag/access/owner 操作后 npm 包列表缓存会失效。
+- 发布预检在“仓库不存在且未勾选自动创建”时返回失败，不再让向导误判为可发布。
+- 发布更新日志支持 `## [1.2.3]`、`## v1.2.3`、`## 1.2.3 — date` 等标题格式。
+- 无效 dist-tag 直接报错，不再静默替换为 latest；`v1.2.3` 这类不规范 package version 在打包阶段拒绝。
+- 删除 GitHub Release 现在需要 `force: true`；同时删除 tag 时必须提供 tag 名称。
+- 主题与目录选择器改为注入服务，避免一次性读取导致深色主题或目录选择器失效。
+- `npm_registry info` 支持按 `version` 查询指定版本；`github_publish release` 增加 `generateNotes`。
+- README 增加版本更新日志入口。
+
+### 说明
+
+- 补丁版本，发布协议与目标不变。
+
 ## 1.1.2
 
 ### 修复

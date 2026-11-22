@@ -125,7 +125,7 @@ try {
   await service.npmDeprecate({ name: '@acme/demo-pkg', range: '^1.0.0', message: '', otp: '123456' })
   assert.equal(registry.state.docs.get('@acme/demo-pkg').versions['1.2.3'].deprecated, undefined)
   await service.npmSetAccess({ name: '@acme/demo-pkg', access: 'private', otp: '123456' })
-  assert.equal(registry.state.docs.get('@acme/demo-pkg').access, 'private')
+  assert.equal(registry.state.docs.get('@acme/demo-pkg').access, 'restricted')
   const owners = await service.npmOwners({ name: '@acme/demo-pkg' })
   assert.equal(owners.maintainers[0].name, 'shiptester')
   await service.npmChangeOwner({ name: '@acme/demo-pkg', user: 'teammate', action: 'add', otp: '123456' })
@@ -151,6 +151,8 @@ try {
 
   const wholeGuard = await service.npmUnpublish({ name: '@acme/demo-pkg', force: false, otp: '123456' }).catch((error) => error)
   assert.equal(serializeError(wholeGuard).code, 'ECONFIRM')
+  const wildcardGuard = await service.npmUnpublish({ name: '@acme/demo-pkg', version: '*', force: true, otp: '123456' }).catch((error) => error)
+  assert.equal(serializeError(wildcardGuard).code, 'ECONFIRM')
   log('whole-package removal requires explicit confirmation')
 
   const ghConnected = await service.githubConnectPat({ token: github.token })
@@ -180,7 +182,7 @@ try {
   assert.ok(github.state.assets[0].data.length > 0)
   const releaseList = await service.githubReleases({ owner: 'shiptester', repo: 'demo-repo' })
   assert.equal(releaseList.items.length, 1)
-  await service.githubDeleteRelease({ owner: 'shiptester', repo: 'demo-repo', releaseId: releaseList.items[0].id })
+  await service.githubDeleteRelease({ owner: 'shiptester', repo: 'demo-repo', releaseId: releaseList.items[0].id, force: true })
   assert.equal(github.state.releases.size, 0)
   log('release creation, asset upload, listing and deletion work')
 

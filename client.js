@@ -520,7 +520,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.2'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.3'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -531,9 +531,9 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'sd-pill ' + (status?.npm?.connected || status?.github?.connected ? 'sd-pill-ok' : 'sd-pill-warn') },
                   h('span', { className: 'sd-dot' }),
                   status?.npm?.connected && status?.github?.connected
-                    ? t('实时数据 · 双账号就绪', 'Live · both accounts ready')
+                    ? t('双账号已连接', 'Both accounts connected')
                     : status?.npm?.connected || status?.github?.connected
-                      ? t('实时数据 · 单账号', 'Live · one account')
+                      ? t('单账号已连接', 'One account connected')
                       : t('账号未连接', 'No account yet')))),
             h('div', { className: 'sd-hazard', 'aria-hidden': 'true' }),
             h('div', { className: 'sd-content' },
@@ -1284,7 +1284,7 @@ window.__ModuleLoader__.load({
                     onChange: (event) => setAccessForm({ ...accessForm, access: event.target.value }),
                   },
                     h('option', { value: 'public' }, 'public'),
-                    h('option', { value: 'private' }, t('private（仅 scoped 包）', 'private (scoped only)'))),
+                    h('option', { value: 'restricted' }, t('private（仅 scoped 包）', 'private (scoped only)'))),
                   h(TextInput, { placeholder: 'OTP', 'aria-label': t('一次性验证码', 'one-time code'), value: accessForm.otp, maxLength: 6, className: 'sd-input-mini', onChange: (event) => setAccessForm({ ...accessForm, otp: event.target.value }) }),
                   h(Btn, { size: 'sm', variant: 'primary', busy: accessBusy, onClick: saveAccess }, t('更新', 'Update'))),
                 h('div', { className: 'sd-field-hint' }, t('只有 scoped 包（@scope/name）可以设为 private；私有包可能需要付费账户。', 'Only scoped packages can be private; private packages may require a paid account.'))),
@@ -1644,7 +1644,7 @@ window.__ModuleLoader__.load({
           danger: true,
           confirmLabel: t('删除', 'Delete'),
           onConfirm: async () => {
-            await call('github.delete-release', { owner: repo.owner, repo: repo.name, releaseId: release.id })
+            await call('github.delete-release', { owner: repo.owner, repo: repo.name, releaseId: release.id, force: true })
             toast(t('Release 已删除（tag 仍保留）', 'Release deleted (tag kept)'), 'ok')
             await load()
           },
@@ -1665,7 +1665,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.2', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.3', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),
@@ -2364,7 +2364,10 @@ window.__ModuleLoader__.load({
           setResult(value)
           setStep(4)
           refreshStatus()
-          toast(value.ok ? t('发布完成', 'Publish complete') : t('部分目标失败，请查看结果', 'Some targets failed; see results'), value.ok ? 'ok' : 'error')
+          const pending = Array.isArray(value.record?.targets) && value.record.targets.some((target) => target.pending === true)
+          toast(value.ok
+            ? pending ? t('npm 已受理，registry 正在同步', 'npm accepted; registry is syncing') : t('发布完成', 'Publish complete')
+            : t('部分目标失败，请查看结果', 'Some targets failed; see results'), value.ok ? 'ok' : 'error')
         } catch (error) {
           fail(error)
         } finally {
@@ -2529,13 +2532,18 @@ window.__ModuleLoader__.load({
           h('div', { className: 'sd-result-hero' + (result.ok ? ' is-ok' : ' is-fail') },
             h('div', { className: 'sd-result-hero-icon' }, result.ok ? h(Icons.check, null) : h(Icons.warn, null)),
             h('div', null,
-              h('div', { className: 'sd-result-hero-title' }, result.ok ? t('发布完成', 'Published') : t('部分目标失败', 'Partly failed')),
+              h('div', { className: 'sd-result-hero-title' }, result.ok
+                ? (Array.isArray(result.record.targets) && result.record.targets.some((target) => target.pending === true)
+                  ? t('已受理 · registry 同步中', 'Accepted · registry syncing')
+                  : t('发布完成', 'Published'))
+                : t('部分目标失败', 'Partly failed')),
               h('div', { className: 'sd-result-hero-sub' }, `${result.record.package}@${result.record.version} · ${result.record.dryRun ? 'dry run' : formatTime(result.record.at, lang)}`))),
           h('div', { className: 'sd-purposes' },
             result.record.targets.map((target) => h('div', { key: target.target, className: 'sd-purpose' + (target.ok ? ' is-ok' : ' is-fail') },
               h('div', { className: 'sd-purpose-head' },
                 h('strong', null, target.target),
-                h(Chip, { tone: target.ok ? 'ok' : 'danger' }, target.ok ? 'ok' : 'fail')),
+                h(Chip, { tone: target.ok ? 'ok' : 'danger' }, target.ok ? 'ok' : 'fail'),
+                target.pending === true ? h(Chip, { tone: 'warn' }, t('同步中', 'syncing')) : null),
               h('div', { className: 'sd-record-links' },
                 target.url ? h('a', { className: 'sd-link', href: target.url, target: '_blank', rel: 'noopener noreferrer' }, 'npm package') : null,
                 target.release?.htmlUrl ? h('a', { className: 'sd-link', href: target.release.htmlUrl, target: '_blank', rel: 'noopener noreferrer' }, `Release ${target.release.tag}`) : null,
@@ -3054,15 +3062,20 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const locale = ctx.get?.('locale')
         if (locale !== null && locale !== undefined) localeService = locale
-        hostServices.uiWorkspace = ctx.get?.('uiWorkspace')
+        ctx.inject(['uiWorkspace'], (scoped) => {
+          hostServices.uiWorkspace = scoped.uiWorkspace
+          return () => {
+            if (hostServices.uiWorkspace === scoped.uiWorkspace) hostServices.uiWorkspace = undefined
+          }
+        })
         ctx.inject(['layout'], (scoped) => {
           hostServices.layout = scoped.layout
           return () => {
             if (hostServices.layout === scoped.layout) hostServices.layout = undefined
           }
         })
-        const theme = ctx.get?.('theme')
-        if (theme !== undefined && theme !== null) {
+        ctx.inject(['theme'], (scoped) => {
+          const theme = scoped.theme
           const readTheme = () => {
             try {
               setThemeScheme(theme.getTheme()?.active?.colorScheme)
@@ -3071,8 +3084,9 @@ window.__ModuleLoader__.load({
             }
           }
           readTheme()
-          ctx.effect(() => ctx.on('theme/change', readTheme), `${NS}: theme`)
-        }
+          const off = scoped.on('theme/change', readTheme)
+          return () => off()
+        })
         ctx.effect(() => {
           const tag = document.createElement('style')
           tag.setAttribute('data-plugin', NS)

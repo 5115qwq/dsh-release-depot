@@ -220,6 +220,12 @@ dsh-release-depot/
 
 ---
 
+## 更新日志
+
+每个版本的变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
 ## English
 
 **Release Depot** connects npm and GitHub inside DeepSeek Harness and gives both the panel and the agent one shared publishing service: publish to npm / GitHub Packages, push a directory and create a GitHub Release with the tarball attached, manage dist-tags, access, maintainers and versions, and review a local publish log.
