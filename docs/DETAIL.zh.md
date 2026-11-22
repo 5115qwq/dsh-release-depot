@@ -1,0 +1,1 @@
+![发布仓面板：npm 包、GitHub Release 与发布向导](preview.svg)

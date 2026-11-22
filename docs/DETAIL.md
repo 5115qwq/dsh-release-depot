@@ -1,0 +1,1 @@
+![Release Depot panel with npm packages, GitHub releases and publish wizard](preview.svg)

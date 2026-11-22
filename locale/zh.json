@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "发布仓",
+    "description": "在 DeepSeek Harness 里连接你的 npm 与 GitHub 账号，并用一个粗野主义工作台管理包与发布：把本地包发布到 npm 或 GitHub Packages、把目录推送到 GitHub 并创建附带 tarball 的 Release、修改 dist-tag、废弃或删除版本、查看本地发布记录。同时给 AI 提供 release_status、npm_registry、npm_publish、github_publish、publish_package 五个工具，与面板共用同一套操作。从左侧栏的「发布仓」入口打开，在「设置」里登录。令牌只保存在 DSH home 的 .dsh-release-depot/auth.json，且只发送给 registry 与 GitHub，不经过任何第三方。发布是真实且不可撤销的副作用，npm 版本发布后不能覆盖；面板在最终确认前强制预检。不会执行 prepack/prepare 等生命周期构建脚本，请先自行构建。未实现 provenance/attestation 签名与 npm Token 自动创建；GitHub 设备流仅支持 github.com。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

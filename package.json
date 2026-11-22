@@ -1,0 +1,70 @@
+{
+  "name": "dsh-release-depot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "Release Depot（发布仓）：在 DeepSeek Harness 内登录 npm 与 GitHub，管理包、发布版本、创建 Release，并把同一套发布能力交给 AI 工具调用。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "npm",
+    "publish",
+    "github",
+    "release"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/5115qwq/dsh-release-depot.git"
+  },
+  "homepage": "https://github.com/5115qwq/dsh-release-depot#readme",
+  "bugs": {
+    "url": "https://github.com/5115qwq/dsh-release-depot/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "dependencies": {
+    "undici": "^7.30.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}
