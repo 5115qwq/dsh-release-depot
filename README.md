@@ -97,8 +97,8 @@ dsh plugin --profile desktop add link:<本目录绝对路径>
 ## 使用
 
 1. 打开「发布仓」→ **设置**：
-   - **npm**：填 npm 用户名（用来生成正确的 Token 链接），打开
-     `https://www.npmjs.com/settings/<用户名>/tokens` 创建 **Granular Access Token**；
+   - **npm**：打开
+     `https://www.npmjs.com/settings/~/tokens`（登录后 `~` 就是当前账号）创建 **Granular Access Token**；
      Permissions 选 **Read and write (publish and stage)**。
      如果账户使用 TOTP，建议**不要**勾 **Bypass two-factor authentication**（npm 会在 2027-01 撤销这类 Token），发布时在向导里填 6 位 TOTP。
      如果账户只能用 WebAuthn/passkey，本插件无法完成浏览器验证，请使用 npm CLI 或 trusted publishing。

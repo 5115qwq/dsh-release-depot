@@ -286,6 +286,11 @@ export async function startMockGitHub(options = {}) {
           if (ref === undefined) return json(response, 404, { message: 'Not Found' })
           return json(response, 200, { ref: `refs/heads/${branch}`, object: { sha: ref } })
         }
+        if (request.method === 'PUT' && rest === '/contents/README.md') {
+          await readBody(request)
+          state.refs.set(`${repo}:main`, 'init-commit')
+          return json(response, 201, { commit: { sha: 'init-commit' }, content: {} })
+        }
         if (request.method === 'POST' && rest === '/git/blobs') {
           const body = JSON.parse((await readBody(request)).toString('utf8'))
           const sha = createHash('sha1').update(Buffer.from(body.content, 'base64')).digest('hex')

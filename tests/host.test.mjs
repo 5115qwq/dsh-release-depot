@@ -167,7 +167,7 @@ try {
   assert.equal(push.ok, true)
   assert.equal(push.fileCount, preview.fileCount)
   assert.equal(github.state.commits.length, 1)
-  assert.equal(github.state.refs.get('demo-repo:main'), 'commit-1')
+  assert.equal(github.state.refs.get('demo-repo:main'), push.commitSha)
   assert.equal(github.state.trees[0].tree.length, preview.fileCount)
   log('GitHub push creates blobs, a tree, a commit and the branch ref')
 

@@ -1897,14 +1897,6 @@ window.__ModuleLoader__.load({
       const lang = useLang()
       const [token, setToken] = React.useState('')
       const [registry, setRegistry] = React.useState(status?.registries?.npm ?? '')
-      const [npmUser, setNpmUser] = React.useState(() => {
-        if (typeof status?.npm?.username === 'string' && status.npm.username !== '') return status.npm.username
-        try {
-          return localStorage.getItem('sd.npmUser') ?? ''
-        } catch {
-          return ''
-        }
-      })
       const [busy, setBusy] = React.useState(false)
       const [verifying, setVerifying] = React.useState(false)
       const [expiryDraft, setExpiryDraft] = React.useState(status?.npm?.expiresAt ?? '')
@@ -1914,19 +1906,8 @@ window.__ModuleLoader__.load({
         if (typeof status?.npm?.expiresAt === 'string') setExpiryDraft(status.npm.expiresAt)
       }, [status?.npm?.expiresAt])
 
-      React.useEffect(() => {
-        if (typeof status?.npm?.username !== 'string' || status.npm.username === '') return
-        setNpmUser(status.npm.username)
-        try {
-          localStorage.setItem('sd.npmUser', status.npm.username)
-        } catch {
-          /* ignore */
-        }
-      }, [status?.npm?.username])
-
-      const tokenPage = npmUser.trim() === ''
-        ? null
-        : `https://www.npmjs.com/settings/${encodeURIComponent(npmUser.trim())}/tokens`
+      // npm's account-relative token page; `~` resolves to the signed-in user.
+      const tokenPage = 'https://www.npmjs.com/settings/~/tokens'
 
       const connect = async () => {
         setBusy(true)
@@ -2001,7 +1982,7 @@ window.__ModuleLoader__.load({
                 type: 'date',
                 value: expiryDraft,
                 'aria-label': t('Token 到期日', 'Token expiry date'),
-                className: 'sd-input-mini',
+                className: 'sd-input-date',
                 onChange: (event) => setExpiryDraft(event.target.value),
               }),
               h(Btn, { size: 'sm', variant: 'ghost', busy: savingExpiry, onClick: saveExpiry }, t('保存到期日', 'Save expiry'))),
@@ -2012,35 +1993,18 @@ window.__ModuleLoader__.load({
               h(Btn, { size: 'sm', variant: 'ghost', busy: verifying, onClick: verify }, t('验证', 'Verify')),
               h(Btn, { size: 'sm', variant: 'danger', onClick: disconnect }, t('断开', 'Disconnect'))))
           : h(React.Fragment, null,
-            h(Field, { label: t('npm 用户名', 'npm username'), optional: true, hint: t('只保存在本机，用于生成正确的 Token 页面链接。', 'Stored locally, used only to build the token page link.') },
-              h(TextInput, {
-                value: npmUser,
-                placeholder: 'your-npm-username',
-                autoComplete: 'username',
-                onChange: (event) => {
-                  const value = event.target.value
-                  setNpmUser(value)
-                  try {
-                    localStorage.setItem('sd.npmUser', value)
-                  } catch {
-                    /* ignore */
-                  }
-                },
-              })),
             h(Field, { label: t('npm Access Token', 'npm access token'), hint: t('Permission 选 Read and write (publish and stage)。如账户用 TOTP，可不必勾 Bypass 2FA，在发布向导里填 6 位验证码；Bypass 2FA 的 Token 会在 2027-01 被 npm 撤销。', 'Choose Read and write (publish and stage). With TOTP you can leave Bypass 2FA off and enter the 6-digit code in the wizard; npm revokes Bypass-2FA tokens in January 2027.') },
               h(TextInput, {
                 type: 'password', value: token, placeholder: 'npm_…', autoComplete: 'new-password',
                 onChange: (event) => setToken(event.target.value),
               })),
-            h(Field, { label: t('Token 到期日', 'Token expiry'), optional: true, hint: t('npm 不再提供永久 Token（通常最多 90 天）。填这里用于到期提醒；不会自动续期。', 'npm no longer issues permanent tokens (usually 90 days max). Set it here for a reminder; renewal is not automatic.') },
+            h(Field, { label: t('Token 到期日', 'Token expiry'), optional: true, hint: t('连接后会自动读取 npm 记录的到期日；这里可手动覆盖，仅用于提醒，不会自动续期。', 'Read automatically from npm after connecting; set it manually to override. Used for reminders only, renewal is not automatic.') },
               h(TextInput, { type: 'date', value: expiryDraft, onChange: (event) => setExpiryDraft(event.target.value) })),
             h(Field, { label: 'registry', optional: true, hint: t('留空使用 npmjs.com；可填私有 registry 地址。', 'Leave empty for npmjs.com, or use a private registry.') },
               h(TextInput, { value: registry, placeholder: 'https://registry.npmjs.org', onChange: (event) => setRegistry(event.target.value) })),
             h('div', { className: 'sd-inline-row' },
               h(Btn, { variant: 'primary', busy, onClick: connect }, t('验证并保存', 'Verify & save')),
-              tokenPage !== null
-                ? h('a', { className: 'sd-link', href: tokenPage, target: '_blank', rel: 'noopener noreferrer' }, t('打开 Token 页面', 'Open token page'))
-                : h('span', { className: 'sd-field-hint' }, t('填写用户名后生成 Token 直达链接', 'Enter your username to get the token link')),
+              h('a', { className: 'sd-link', href: tokenPage, target: '_blank', rel: 'noopener noreferrer' }, t('打开 Token 页面', 'Open token page')),
               h('a', { className: 'sd-link', href: 'https://docs.npmjs.com/creating-and-viewing-access-tokens', target: '_blank', rel: 'noopener noreferrer' }, t('创建说明', 'Docs')))))
     }
 
@@ -2783,6 +2747,7 @@ window.__ModuleLoader__.load({
 .sd-field-hint { font-size: 11px; color: var(--sd-muted); line-height: 1.45; }
 .sd-input { width: 100%; border: 2.5px solid var(--sd-line); border-radius: 8px; background: var(--sd-panel); color: var(--sd-ink); padding: 7px 9px; font-family: inherit; font-size: 12.5px; outline: none; min-width: 0; }
 .sd-input-mini { width: 90px; min-width: 70px; }
+.sd-input-date { width: 132px; min-width: 120px; }
 .sd-input:focus { outline: 3px solid var(--sd-blue); outline-offset: 1px; }
 .sd-input::placeholder { color: var(--sd-muted); opacity: .7; }
 .sd-textarea { resize: vertical; min-height: 70px; font-family: ui-monospace, monospace; font-size: 11.5px; line-height: 1.5; }
