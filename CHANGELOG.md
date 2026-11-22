@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1
+
+- Republish after the npm CDN cached a 404 for the 1.1.0 tarball during registry finalization. No functional changes; verified with a clean `pnpm add dsh-release-depot@1.1.1`.
+
 ## 1.1.0
 
 - Rename the product to 发布仓 / Release Depot (package: `dsh-release-depot`); migrate old `.dsh-ship-deck` credentials.
