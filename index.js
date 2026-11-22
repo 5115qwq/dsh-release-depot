@@ -13,7 +13,7 @@ import { createTools, SHIP_DECK_PROMPT } from './lib/tools.js'
 
 export const name = 'dsh-release-depot'
 
-const VERSION = '1.1.3'
+const VERSION = '1.1.4'
 const MAX_BODY_BYTES = 1024 * 1024
 
 function normalizeConfig(raw) {
@@ -112,6 +112,7 @@ function createOperations(service) {
     'github.push': (input) => service.githubPush(input),
     'github.release': (input) => service.githubRelease(input),
     'github.delete-release': (input) => service.githubDeleteRelease(input),
+    'github.delete-repo': (input) => service.githubDeleteRepo(input),
 
     'project.inspect': (input) => service.projectInspect(input),
     'project.preview': (input) => service.projectPreview(input),

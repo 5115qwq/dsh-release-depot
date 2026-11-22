@@ -20,6 +20,22 @@ window.__ModuleLoader__.load({
     let localeService = null
     const hostServices = {}
 
+    let sidebarVisible = true
+    const sidebarListeners = new Set()
+    function setSidebarVisibleState(next) {
+      const normalized = next !== false
+      if (normalized === sidebarVisible) return
+      sidebarVisible = normalized
+      for (const fn of [...sidebarListeners]) fn()
+    }
+    function subscribeSidebar(fn) {
+      sidebarListeners.add(fn)
+      return () => sidebarListeners.delete(fn)
+    }
+    function useSidebarVisible() {
+      return React.useSyncExternalStore(subscribeSidebar, () => sidebarVisible, () => true)
+    }
+
     let themeScheme = 'light'
     const themeListeners = new Set()
     function setThemeScheme(next) {
@@ -77,6 +93,17 @@ window.__ModuleLoader__.load({
 
     const RPC = '/dsh-release-depot/rpc'
 
+    /**
+     * Small mutable scratchpad for values that must survive a confirm dialog's
+     * render without forcing the parent to re-render on every keystroke.
+     * Reset it right before opening a dialog.
+     */
+    const OT = { npmOtp: '', confirmText: '' }
+    function resetScratch() {
+      OT.npmOtp = ''
+      OT.confirmText = ''
+    }
+
     class ApiError extends Error {
       constructor(info) {
         super(info?.message ?? '请求失败')
@@ -84,6 +111,7 @@ window.__ModuleLoader__.load({
         this.code = info?.code ?? 'EUNKNOWN'
         this.hint = info?.hint ?? ''
         this.status = info?.status ?? 0
+        this.details = info?.details ?? null
       }
     }
 
@@ -125,6 +153,30 @@ window.__ModuleLoader__.load({
       if (error === null || error === undefined) return ''
       const base = error instanceof Error ? error.message : String(error)
       return error.hint ? `${base} 提示：${error.hint}` : base
+    }
+
+    /** Collect actionable links a Host error carried in `details`. */
+    function errorLinks(error) {
+      const details = error?.details
+      if (details === null || typeof details !== 'object') return []
+      const links = []
+      const push = (label, href) => {
+        if (typeof href !== 'string' || href === '' || !/^https:\/\//.test(href)) return
+        if (links.some((item) => item.href === href)) return
+        links.push({ label, href })
+      }
+      push('打开 npm Token 页面', details.npmTokenPage)
+      push('设置 npm 两步验证', details.npmTwoFactorPage)
+      push('npm 2FA 说明', details.npmHelpPage)
+      push('我的 npm 包', details.npmPackagesPage)
+      push('到 npm 网页删除', details.npmPackagePage)
+      push('GitHub Token 设置', details.tokenSettingsUrl)
+      push('GitHub 细粒度 Token', details.fineGrainedUrl)
+      return links
+    }
+
+    function errorHint(error) {
+      return typeof error?.hint === 'string' ? error.hint : ''
     }
 
     function formatTime(value, lang) {
@@ -316,7 +368,18 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'sd-toasts', 'aria-live': 'polite' },
         items.map((item) => h('div', { key: item.id, className: `sd-toast sd-toast-${item.tone}` },
           h('span', { className: 'sd-toast-icon' }, item.tone === 'error' ? h(Icons.warn, null) : h(Icons.check, null)),
-          h('span', { className: 'sd-toast-text' }, item.text))))
+          h('div', { className: 'sd-toast-body' },
+            h('span', { className: 'sd-toast-text' }, item.text),
+            Array.isArray(item.links) && item.links.length > 0
+              ? h('div', { className: 'sd-toast-links' },
+                item.links.map((link) => h('a', {
+                  key: link.href,
+                  className: 'sd-toast-link',
+                  href: link.href,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                }, link.label, h(Icons.external, null))))
+              : null))))
     }
 
     function CopyButton(props) {
@@ -364,23 +427,39 @@ window.__ModuleLoader__.load({
 
     function BundleEntryCard() {
       const t = useT()
-      const openPanel = () => {
-        const layout = hostServices.layout
-        if (layout !== undefined && typeof layout.selectPanel === 'function') {
-          try {
-            layout.selectPanel('ship-deck')
-          } catch {
-            /* host without main-panel navigation */
-          }
+      const enabled = useSidebarVisible()
+      const [saving, setSaving] = React.useState(false)
+      const [error, setError] = React.useState(null)
+      const toggle = async () => {
+        const next = !enabled
+        hostServices.sidebar?.setEnabled(next)
+        setSaving(true)
+        setError(null)
+        try {
+          await call('prefs.set', { sidebarVisible: next })
+        } catch (err) {
+          hostServices.sidebar?.setEnabled(!next)
+          setError(errorText(err))
+        } finally {
+          setSaving(false)
         }
       }
       return h('div', { className: 'sd-bundle-card' },
         h('div', { className: 'sd-bundle-icon' }, h(LogoMark, null)),
         h('div', { className: 'sd-bundle-copy' },
-          h('strong', null, t('发布仓工作台', 'Release Depot workbench')),
-          h('span', null, t('左侧栏「发布仓」或 设置 → 发布仓；登录 npm / GitHub 后即可发布与管理。',
-            'Open from 发布仓 in the left sidebar, or Settings → 发布仓; connect npm / GitHub to publish.'))),
-        h('button', { type: 'button', className: 'sd-bundle-action', onClick: openPanel }, t('打开工作台', 'Open workbench')))
+          h('strong', null, t('左侧栏「发布仓」开关', 'Show Release Depot in sidebar')),
+          h('span', null, t('默认打开；关闭后隐藏左侧栏入口，可随时在这里重新打开。',
+            'On by default. Turn it off to hide the left-sidebar entry; reopen it here anytime.')),
+          error !== null ? h('span', { className: 'sd-bundle-error' }, error) : null),
+        h('button', {
+          type: 'button',
+          role: 'switch',
+          className: 'sd-switch' + (enabled ? ' is-on' : ''),
+          'aria-checked': enabled,
+          'aria-label': t('左侧栏「发布仓」开关', 'Show Release Depot in sidebar'),
+          disabled: saving,
+          onClick: toggle,
+        }, h('span', { className: 'sd-switch-knob', 'aria-hidden': 'true' })))
     }
 
     // ── panel ──────────────────────────────────────────────────────────────
@@ -449,17 +528,18 @@ window.__ModuleLoader__.load({
           .catch(() => {})
       }, [status?.npm?.connected, refresh])
 
-      const toast = React.useCallback((text, tone = 'ok') => {
+      const toast = React.useCallback((text, tone = 'ok', options = {}) => {
         const id = toastId.current
         toastId.current += 1
-        setToasts((items) => [...items, { id, text, tone }])
+        const links = Array.isArray(options?.links) ? options.links : []
+        setToasts((items) => [...items, { id, text, tone, links }])
         window.setTimeout(() => {
           setToasts((items) => items.filter((item) => item.id !== id))
-        }, tone === 'error' ? 7000 : 3500)
+        }, tone === 'error' ? 9000 : 3500)
       }, [])
 
       const fail = React.useCallback((error) => {
-        toast(errorText(error), 'error')
+        toast(errorText(error), 'error', { links: errorLinks(error) })
       }, [toast])
 
       const go = React.useCallback((nextTab) => {
@@ -474,7 +554,6 @@ window.__ModuleLoader__.load({
         { id: 'dashboard', label: t('工作台', 'Workbench'), icon: Icons.dashboard },
         { id: 'packages', label: t('npm 包库', 'npm packages'), icon: Icons.package, badge: status?.counts?.npmPackages },
         { id: 'repos', label: t('GitHub 仓库', 'GitHub repos'), icon: Icons.repo, badge: status?.github?.connected ? 'ON' : null },
-        { id: 'records', label: t('发布记录', 'Publish log'), icon: Icons.record, badge: status?.counts?.history },
         { id: 'settings', label: t('设置', 'Settings'), icon: Icons.settings },
       ]
 
@@ -482,7 +561,6 @@ window.__ModuleLoader__.load({
         dashboard: t('工作台', 'Workbench'),
         packages: t('npm 包库', 'npm packages'),
         repos: t('GitHub 仓库', 'GitHub repos'),
-        records: t('发布记录', 'Publish log'),
         settings: t('设置', 'Settings'),
       }
 
@@ -520,7 +598,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.3'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.4'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -547,15 +625,14 @@ window.__ModuleLoader__.load({
                   h('button', { type: 'button', className: 'sd-link-btn', onClick: () => setNoticeHidden(true) }, t('知道了', 'Got it')))
                 : null,
               tab === 'dashboard' && h(Dashboard, {
-                status, loading, refresh, openWizard, go, lang, t, onOpenDetail: setDetail,
+                status, loading, refresh, openWizard, lang, t, toast, fail, setConfirm,
               }),
-              tab === 'packages' && h(PackagesPage, { status, t, lang, toast, fail, openWizard, onOpenDetail: setDetail, go }),
+              tab === 'packages' && h(PackagesPage, { status, t, lang, toast, fail, openWizard, onOpenDetail: setDetail, refreshStatus: refresh }),
               tab === 'repos' && h(ReposPage, {
-                status, t, lang, toast, fail, openPush: setPushRepo, openReleases: setReleasesRepo, refreshStatus: refresh, go,
+                status, t, lang, toast, fail, openPush: setPushRepo, openReleases: setReleasesRepo, refreshStatus: refresh, setConfirm,
               }),
-              tab === 'records' && h(RecordsPage, { t, lang, toast, fail, setConfirm }),
               tab === 'settings' && h(SettingsPage, {
-                status, t, lang, toast, fail, refreshStatus: refresh,
+                status, t, lang, toast, fail, refreshStatus: refresh, setConfirm,
               }))),
           h(Toasts, { items: toasts }),
           detail !== null && h(PackageDetail, {
@@ -629,10 +706,10 @@ window.__ModuleLoader__.load({
       const github = status.github?.connected === true
       if (!npm && !github) {
         return {
-          text: t('还没有连接账号。先在「设置」里登录 npm 或 GitHub，发布仓才能代你发布。',
-            'No account connected yet. Sign in to npm or GitHub under Settings before publishing.'),
-          actionLabel: t('去设置', 'Open settings'),
-          action: () => setTabAndScroll('settings'),
+          text: t('还没有连接账号。先在「npm 包库」或「GitHub 仓库」顶部登录，发布仓才能代你发布。',
+            'No account connected yet. Sign in at the top of npm packages or GitHub repos before publishing.'),
+          actionLabel: t('去 npm 包库', 'Open npm packages'),
+          action: () => setTabAndScroll('packages'),
         }
       }
       if (npm && status?.npm?.expiresInDays !== null && status?.npm?.expiresInDays !== undefined && status.npm.expiresInDays <= 21) {
@@ -642,7 +719,7 @@ window.__ModuleLoader__.load({
             : t(`npm Token 还有 ${status.npm.expiresInDays} 天到期。npm 不再提供永久 Token，插件不会保存密码，因此不会自动续期；请到 Token 页面重新生成并更新到期日。`,
               `The npm token expires in ${status.npm.expiresInDays} days. npm no longer issues permanent tokens and the plugin does not store your password, so renewal is manual; regenerate it on the token page.`),
           actionLabel: t('去续期', 'Renew'),
-          action: () => setTabAndScroll('settings'),
+          action: () => setTabAndScroll('packages'),
         }
       }
       if (npm && status?.npm?.bypass2fa === true) {
@@ -650,7 +727,7 @@ window.__ModuleLoader__.load({
           text: t('当前 npm Token 勾选了 Bypass two-factor authentication。npm 会在 2027 年 1 月撤销这类 Token；建议改用普通 Granular Token，并在发布时填 6 位 TOTP。',
             'This npm token bypasses two-factor authentication. npm will revoke such tokens in January 2027; switch to a normal granular token and enter the 6-digit TOTP at publish time.'),
           actionLabel: t('去更换', 'Replace'),
-          action: () => setTabAndScroll('settings'),
+          action: () => setTabAndScroll('packages'),
         }
       }
       if (!github) {
@@ -658,7 +735,7 @@ window.__ModuleLoader__.load({
           text: t('npm 已连接，GitHub 未连接。发布到 npm 可以直接开始；GitHub Packages 与 Release 需要先连接 GitHub。',
             'npm is connected, GitHub is not. npm publishing works now; GitHub Packages and releases need GitHub.'),
           actionLabel: t('连接 GitHub', 'Connect GitHub'),
-          action: () => setTabAndScroll('settings'),
+          action: () => setTabAndScroll('repos'),
         }
       }
       if (!npm) {
@@ -666,7 +743,7 @@ window.__ModuleLoader__.load({
           text: t('GitHub 已连接，npm 未连接。可以推送仓库和创建 Release；发布到 npm 需要先登录。',
             'GitHub is connected, npm is not. Repos and releases work; npm publishing needs a token.'),
           actionLabel: t('连接 npm', 'Connect npm'),
-          action: () => setTabAndScroll('settings'),
+          action: () => setTabAndScroll('packages'),
         }
       }
       return {
@@ -702,82 +779,83 @@ window.__ModuleLoader__.load({
     }
 
     function Dashboard(props) {
-      const { status, loading, refresh, openWizard, go, lang, t } = props
+      const { status, loading, refresh, openWizard, lang, t, toast, fail, setConfirm } = props
+      const [records, setRecords] = React.useState(null)
+      const [recordsLoading, setRecordsLoading] = React.useState(false)
+      const [recordsError, setRecordsError] = React.useState(null)
+
+      const loadRecords = React.useCallback(async () => {
+        setRecordsLoading(true)
+        try {
+          const result = await call('history', { limit: 100 })
+          setRecords(result.items ?? [])
+          setRecordsError(null)
+        } catch (error) {
+          setRecordsError(error)
+        } finally {
+          setRecordsLoading(false)
+        }
+      }, [])
+
+      React.useEffect(() => { loadRecords() }, [loadRecords, status?.counts?.history])
+
       if (loading && status === null) {
         return h('div', { className: 'sd-loading' }, h(Spinner, { large: true }), h('span', null, t('读取中…', 'Loading…')))
       }
       const npmConnected = status?.npm?.connected === true
       const githubConnected = status?.github?.connected === true
-      const both = npmConnected && githubConnected
       const projects = status?.recentProjects ?? []
-      const recent = status?.recentHistory ?? []
-      const stateTitle = both
-        ? t('发布就绪 · 选择项目', 'Ready to ship · pick a project')
-        : npmConnected || githubConnected
-          ? t('部分就绪 · 还差一个账号', 'Partly ready · one account missing')
-          : t('等待账号 · 尚未连接', 'Waiting · connect an account')
-      const stateBody = both
-        ? t('npm 与 GitHub 均已连接。打包、发布、建 Release 都在本地完成，令牌不会离开这台机器。',
-          'npm and GitHub are connected. Packing, publishing and releases run locally; tokens never leave this machine.')
-        : npmConnected
-          ? t('npm 可以发布。连接 GitHub 后还能推仓库、发 GitHub Packages 与 Release。',
-            'npm is ready. Connect GitHub for repo pushes, GitHub Packages and releases.')
-          : githubConnected
-            ? t('GitHub 可以推送与建 Release。登录 npm 后即可发布包版本。',
-              'GitHub is ready for pushes and releases. Connect npm to publish versions.')
-            : t('先连接 npm 或 GitHub。连接只需要一个 Token 或一次设备流授权。',
-              'Connect npm or GitHub first: a token or a device-flow approval is enough.')
+
+      const clearRecords = () => {
+        setConfirm({
+          title: t('清空发布记录？', 'Clear publish log?'),
+          body: t('只删除本机的记录，不会影响 npm 包或 GitHub Release。', 'Only the local log is removed; npm packages and GitHub releases are untouched.'),
+          confirmLabel: t('清空', 'Clear'),
+          onConfirm: async () => {
+            try {
+              await call('history.clear')
+              setRecords([])
+              refresh()
+              toast(t('发布记录已清空', 'Publish log cleared'), 'ok')
+            } catch (error) {
+              fail(error)
+            }
+          },
+        })
+      }
 
       return h('div', { className: 'sd-page' },
         h('div', { className: 'sd-glance' },
           h('div', null,
-            h('span', { className: 'sd-eyebrow' }, 'AT A GLANCE'),
+            h('span', { className: 'sd-eyebrow' }, 'WORKBENCH'),
             h('h1', { className: 'sd-h1' }, t('工作台', 'Workbench')),
-            h('p', { className: 'sd-sub' }, t('管理 npm 与 GitHub 的账号、包、版本与发布。', 'Manage npm and GitHub accounts, packages, versions and releases.'))),
-          h('span', { className: 'sd-mini-badge' }, t('实时 · 本地凭据', 'Live · local credentials'))),
-        h('div', { className: 'sd-dash-grid' },
-          h('section', { className: 'sd-state-card' },
-            h('div', { className: 'sd-state-head' },
-              h('div', { className: 'sd-state-tile' }, h(LogoMark, null)),
-              h('div', { className: 'sd-state-copy' },
-                h('h2', { className: 'sd-state-title' }, stateTitle),
-                h('p', { className: 'sd-state-body' }, stateBody))),
-            h('div', { className: 'sd-state-actions' },
-              h(Btn, { variant: 'primary', onClick: () => openWizard({}) }, h(Icons.play, null), t('打开发布向导', 'Open publish wizard')),
-              h(Btn, { variant: 'default', onClick: refresh }, h(Icons.refresh, null), t('刷新状态', 'Refresh')),
-              h(Btn, { variant: 'ghost', onClick: () => go('records') }, t('查看记录', 'View log'))),
-            h('div', { className: 'sd-dash' }),
-            h('div', { className: 'sd-steps' },
-              step(1, t('选择项目', 'Pick project'), true),
-              step(2, t('选择目标', 'Pick targets'), false),
-              step(3, t('确认发布', 'Confirm'), false))),
-          h('div', { className: 'sd-stat-stack' },
-            h(StatCard, {
-              color: 'mint',
-              label: t('npm 包', 'NPM PACKAGES'),
-              value: status?.counts?.npmPackages ?? '—',
-              sub: npmConnected
-                ? t(`账号 @${status.npm.username ?? '?'} 可管理的包`, `packages @${status.npm.username ?? '?'} can manage`)
-                : t('连接 npm 后加载包列表', 'connect npm to load packages'),
-            }),
-            h(StatCard, {
-              color: 'blue',
-              label: t('GitHub Releases', 'GITHUB RELEASES'),
-              value: status?.counts?.githubReleases ?? 0,
-              sub: githubConnected
-                ? t(`账号 @${status.github.login ?? '?'} · 本地记录`, `@${status.github.login ?? '?'} · local log`)
-                : t('连接 GitHub 后可创建 Release', 'connect GitHub to create releases'),
-            }),
-            h(StatCard, {
-              color: 'pink',
-              label: t('本地发布记录', 'LOCAL PUBLISHES'),
-              value: status?.counts?.history ?? 0,
-              sub: t('只保存在本机，不上传', 'stored locally, never uploaded'),
-            }))),
+            h('p', { className: 'sd-sub' }, t('账号、包、Release 与发布记录都在这里。', 'Accounts, packages, releases and the publish log in one place.'))),
+          h('div', { className: 'sd-page-actions' },
+            h(Btn, { variant: 'primary', onClick: () => openWizard({}) }, h(Icons.play, null), t('打开发布向导', 'Publish')),
+            h(Btn, { variant: 'default', onClick: refresh, busy: loading }, h(Icons.refresh, null), t('刷新', 'Refresh')))),
+        h('div', { className: 'sd-stat-grid' },
+          h(StatCard, {
+            color: 'mint',
+            label: t('npm 包', 'NPM PACKAGES'),
+            value: status?.counts?.npmPackages ?? '—',
+            sub: npmConnected ? `@${status.npm.username ?? '?'}` : t('连接 npm 后加载', 'connect npm'),
+          }),
+          h(StatCard, {
+            color: 'blue',
+            label: t('GitHub Releases', 'GITHUB RELEASES'),
+            value: status?.counts?.githubReleases ?? 0,
+            sub: githubConnected ? `@${status.github.login ?? '?'}` : t('连接 GitHub 后可创建', 'connect GitHub'),
+          }),
+          h(StatCard, {
+            color: 'pink',
+            label: t('本地发布记录', 'LOCAL PUBLISHES'),
+            value: status?.counts?.history ?? 0,
+            sub: t('只保存在本机', 'stored locally'),
+          })),
         h('section', { className: 'sd-section' },
           h('div', { className: 'sd-section-head' },
             h('h2', { className: 'sd-section-title' }, t('从最近项目开始', 'Start from a recent project')),
-            h('span', { className: 'sd-section-hint' }, t('发布记录里的项目会出现在这里', 'Projects with history appear here'))),
+            h('span', { className: 'sd-section-hint' }, t('发布过的项目会出现在这里', 'Projects with history appear here'))),
           projects.length === 0
             ? h('div', { className: 'sd-project-empty' },
               h('div', { className: 'sd-empty-icon' }, h(Icons.folder, null)),
@@ -796,17 +874,19 @@ window.__ModuleLoader__.load({
               })))),
         h('section', { className: 'sd-section' },
           h('div', { className: 'sd-section-head' },
-            h('h2', { className: 'sd-section-title' }, t('最近发布', 'Recent publishes')),
-            h('button', { type: 'button', className: 'sd-link-btn', onClick: () => go('records') }, t('全部记录 →', 'All records →'))),
-          recent.length === 0
-            ? h('div', { className: 'sd-empty sd-empty-flat' }, h('span', null, t('还没有发布记录。完成一次发布后会记录在这里。', 'No publish records yet. The first publish will appear here.')))
-            : h(HistoryTable, { items: recent, compact: true, t, lang })))
-
-      function step(number, label, active) {
-        return h('div', { className: 'sd-step' + (active ? ' is-active' : '') },
-          h('span', { className: 'sd-step-num' }, String(number)),
-          h('span', null, label))
-      }
+            h('h2', { className: 'sd-section-title' }, t('发布记录', 'Publish log')),
+            h('div', { className: 'sd-inline-row' },
+              h(Btn, { size: 'sm', variant: 'ghost', onClick: loadRecords, busy: recordsLoading }, h(Icons.refresh, null), t('刷新', 'Refresh')),
+              records !== null && records.length > 0 ? h(Btn, { size: 'sm', variant: 'ghost', onClick: clearRecords }, h(Icons.trash, null), t('清空', 'Clear')) : null)),
+          recordsError !== null
+            ? h('div', { className: 'sd-note sd-note-danger sd-inline-row' },
+              h('span', { style: { flex: 1 } }, errorText(recordsError)),
+              h(Btn, { size: 'sm', onClick: loadRecords }, t('重试', 'Retry')))
+            : recordsLoading && records === null
+              ? h('div', { className: 'sd-loading' }, h(Spinner, { large: true }))
+              : records !== null && records.length === 0
+                ? h('div', { className: 'sd-empty sd-empty-flat' }, h('span', null, t('还没有发布记录。完成一次发布后会记录在这里。', 'No publish records yet. The first publish will appear here.')))
+                : h(HistoryTable, { items: records ?? [], t, lang })))
     }
 
     function ProjectCard(props) {
@@ -899,7 +979,7 @@ window.__ModuleLoader__.load({
     // ── npm packages ───────────────────────────────────────────────────────
 
     function PackagesPage(props) {
-      const { status, t, lang, toast, fail, openWizard, onOpenDetail, go } = props
+      const { status, t, lang, toast, fail, openWizard, onOpenDetail, refreshStatus } = props
       const [data, setData] = React.useState(null)
       const [loading, setLoading] = React.useState(true)
       const [query, setQuery] = React.useState('')
@@ -916,32 +996,15 @@ window.__ModuleLoader__.load({
           const result = await call('npm.packages', { limit: 60, refresh })
           setData(result)
           setError(null)
+          if (typeof refreshStatus === 'function') refreshStatus()
         } catch (err) {
           setError(err)
         } finally {
           setLoading(false)
         }
-      }, [connected])
+      }, [connected, refreshStatus])
 
       React.useEffect(() => { load(false) }, [load])
-
-      if (!connected) {
-        return h('div', { className: 'sd-page' },
-          h(PageHead, {
-            eyebrow: 'NPM REGISTRY',
-            title: t('npm 包库', 'npm packages'),
-            desc: t('登录 npm 后，这里会列出你有权限管理的包，并支持 dist-tag、废弃与删除。',
-              'After signing in, this lists packages you can manage and offers dist-tags, deprecation and unpublish.'),
-            actions: h(Btn, { variant: 'primary', onClick: () => go('settings') }, t('连接 npm', 'Connect npm')),
-          }),
-          h(EmptyState, {
-            icon: h(Icons.npm, null),
-            title: t('npm 尚未登录', 'npm is not connected'),
-            body: t('粘贴一个 Granular Access Token（勾选 Read and write），发布仓即可读取你的包。',
-              'Paste a Granular Access Token with Read and write access to load your packages.'),
-            action: h(Btn, { variant: 'primary', onClick: () => go('settings') }, t('去设置', 'Open settings')),
-          }))
-      }
 
       const items = (data?.items ?? []).filter((item) => {
         const text = query.trim().toLowerCase()
@@ -953,59 +1016,68 @@ window.__ModuleLoader__.load({
         h(PageHead, {
           eyebrow: 'NPM REGISTRY',
           title: t('npm 包库', 'npm packages'),
-          desc: t('读取你有写权限的包；dist-tag、废弃与删除都直接调用 registry。',
-            'Packages you can write to, with registry-backed dist-tags, deprecation and unpublish.'),
+          desc: t('账号、包列表与版本管理；dist-tag、访问级别、废弃与删除都直接调用 registry。',
+            'Account, packages and version management; dist-tags, access, deprecation and unpublish call the registry.'),
           actions: h(React.Fragment, null,
-            h(Btn, { onClick: () => load(true), busy: loading }, h(Icons.refresh, null), t('刷新', 'Refresh')),
+            connected ? h(Btn, { onClick: () => load(true), busy: loading }, h(Icons.refresh, null), t('刷新', 'Refresh')) : null,
             h(Btn, { variant: 'primary', onClick: () => openWizard({}) }, h(Icons.plus, null), t('发布新包', 'Publish'))),
         }),
-        h('div', { className: 'sd-toolbar' },
-          h('div', { className: 'sd-search' },
-            h('span', { className: 'sd-search-icon' }, h(Icons.package, null)),
-            h('input', {
-              type: 'search',
-              className: 'sd-input sd-search-input',
-              placeholder: t('按包名或描述过滤…', 'Filter by name or description…'),
-              'aria-label': t('过滤 npm 包', 'Filter npm packages'),
-              value: query,
-              onChange: (event) => setQuery(event.target.value),
-            })),
-          data !== null && h(Chip, { tone: 'plain' }, data.source === 'search'
-            ? t('来自 registry 搜索', 'registry search')
-            : t('账号授权列表', 'account access list')),
-          data !== null && h('span', { className: 'sd-toolbar-note' },
-            `${data.total ?? items.length} ${t('个包', 'packages')}${data.truncated ? t('（已截断）', ' (truncated)') : ''}`)),
-        data?.warnings?.length > 0
-          ? h('div', { className: 'sd-note sd-note-warn' }, data.warnings.map((warning, index) => h('div', { key: index }, warning)))
-          : null,
-        error !== null
-          ? h('div', { className: 'sd-note sd-note-danger' }, errorText(error))
-          : null,
-        loading && data === null
-          ? h('div', { className: 'sd-loading' }, h(Spinner, { large: true }), h('span', null, t('读取包列表…', 'Loading packages…')))
-          : items.length === 0
-            ? h(EmptyState, {
-              title: t('没有匹配的包', 'No matching packages'),
-              body: error !== null ? t('上一次读取失败，可以点刷新重试。', 'The last read failed; try Refresh.') : t('换一个关键词，或先发布第一个包。', 'Try another keyword, or publish your first package.'),
-            })
-            : h('div', { className: 'sd-pkg-list' },
-              items.map((item) => h(PackageRow, {
-                key: item.name,
-                item,
-                t,
-                lang,
-                status,
-                onOpen: () => onOpenDetail(item.name),
-                onCopy: async () => {
-                  const command = `npm i ${item.name}@${item.version ?? 'latest'}`
-                  try {
-                    await navigator.clipboard.writeText(command)
-                    toast(t('已复制安装命令', 'Install command copied'), 'ok')
-                  } catch {
-                    toast(command, 'ok')
-                  }
-                },
-              }))))
+        h(NpmAccountCard, { status, t, toast, fail, refreshStatus, packageCount: data?.total ?? null }),
+        connected
+          ? h(React.Fragment, null,
+            h('div', { className: 'sd-toolbar' },
+              h('div', { className: 'sd-search' },
+                h('span', { className: 'sd-search-icon' }, h(Icons.package, null)),
+                h('input', {
+                  type: 'search',
+                  className: 'sd-input sd-search-input',
+                  placeholder: t('按包名或描述过滤…', 'Filter by name or description…'),
+                  'aria-label': t('过滤 npm 包', 'Filter npm packages'),
+                  value: query,
+                  onChange: (event) => setQuery(event.target.value),
+                })),
+              data !== null && h(Chip, { tone: 'plain' }, data.source === 'search'
+                ? t('公开搜索 · 私有包不显示', 'public search · private packages hidden')
+                : t('账号授权列表', 'account access list')),
+              data !== null && h('span', { className: 'sd-toolbar-note' },
+                `${data.total ?? items.length} ${t('个包', 'packages')}${data.truncated ? t('（已截断）', ' (truncated)') : ''}`)),
+            data?.warnings?.length > 0
+              ? h('div', { className: 'sd-note' }, data.warnings.map((warning, index) => h('div', { key: index }, warning)))
+              : null,
+            error !== null
+              ? h('div', { className: 'sd-note sd-note-danger' }, errorText(error))
+              : null,
+            loading && data === null
+              ? h('div', { className: 'sd-loading' }, h(Spinner, { large: true }), h('span', null, t('读取包列表…', 'Loading packages…')))
+              : items.length === 0
+                ? h(EmptyState, {
+                  title: t('没有匹配的包', 'No matching packages'),
+                  body: error !== null ? t('上一次读取失败，可以点刷新重试。', 'The last read failed; try Refresh.') : t('换一个关键词，或先发布第一个包。', 'Try another keyword, or publish your first package.'),
+                })
+                : h('div', { className: 'sd-pkg-list' },
+                  items.map((item) => h(PackageRow, {
+                    key: item.name,
+                    item,
+                    t,
+                    lang,
+                    status,
+                    onOpen: () => onOpenDetail(item.name),
+                    onCopy: async () => {
+                      const command = `npm i ${item.name}@${item.version ?? 'latest'}`
+                      try {
+                        await navigator.clipboard.writeText(command)
+                        toast(t('已复制安装命令', 'Install command copied'), 'ok')
+                      } catch {
+                        toast(command, 'ok')
+                      }
+                    },
+                  }))))
+          : h(EmptyState, {
+            icon: h(Icons.npm, null),
+            title: t('npm 尚未登录', 'npm is not connected'),
+            body: t('在上方粘贴 Granular Access Token（Permissions 选 Read and write (publish and stage)），保存后即可读取你的包。',
+              'Paste a granular access token above with Read and write (publish and stage) to load your packages.'),
+          }))
     }
 
     function PackageRow(props) {
@@ -1048,7 +1120,7 @@ window.__ModuleLoader__.load({
       const [deprecateMessage, setDeprecateMessage] = React.useState('')
       const [deprecateOtp, setDeprecateOtp] = React.useState('')
       const [deprecateBusy, setDeprecateBusy] = React.useState(false)
-      const [unpublish, setUnpublish] = React.useState({ version: '', confirmName: '', otp: '', whole: false, open: false })
+      const [unpublish, setUnpublish] = React.useState({ version: '', confirmName: '', whole: false, open: false })
       const [accessForm, setAccessForm] = React.useState({ access: 'public', otp: '' })
       const [accessBusy, setAccessBusy] = React.useState(false)
       const [ownerForm, setOwnerForm] = React.useState({ user: '', otp: '' })
@@ -1164,11 +1236,36 @@ window.__ModuleLoader__.load({
           toast(t('请输入完整包名以确认删除整包', 'Type the exact package name to remove the whole package'), 'error')
           return
         }
+        resetScratch()
         setConfirm?.({
           title: t('删除 npm 包内容', 'Remove from npm'),
           body: unpublish.whole
             ? t(`即将删除整个包 ${name} 及其所有版本。这可能不可恢复。`, `This removes ${name} and every version. It may be unrecoverable.`)
             : t(`即将删除 ${name}@${version}。同一天内可重新发布该版本。`, `This removes ${name}@${version}. npm allows republishing that version only within the same day.`),
+          note: h('div', { className: 'sd-confirm-otp' },
+            h('strong', { className: 'sd-confirm-warn' },
+              t('npm 侧大概率还没启用 2FA', 'npm 2FA is probably not enabled yet')),
+            h('span', { className: 'sd-field-hint' },
+              t('npm 的规则是「账号开启 2FA」或「Token 勾选 Bypass 2FA」二选一。如果账号没绑验证器，这里填任何 6 位数字都会被拒绝——因为 npm 根本不校验它。',
+                'npm requires either account 2FA or a bypass-2FA token. If no authenticator is registered, any 6-digit code is rejected — npm never even checks it.')),
+            h(TextInput, {
+              defaultValue: OT.npmOtp,
+              placeholder: t('已绑定验证器时填 6 位码', '6-digit code if an authenticator is registered'),
+              inputMode: 'numeric',
+              autoComplete: 'one-time-code',
+              maxLength: 6,
+              autoFocus: true,
+              onChange: (event) => { OT.npmOtp = event.target.value },
+            }),
+            h('span', { className: 'sd-confirm-otp-warn' },
+              t('⚠ 恢复码（recovery codes）不能填这里：npm 只接受真正的动态码，填恢复码会触发 72 小时安全限制，期间无法发布或删除。',
+                '⚠ Do not paste recovery codes here: npm only accepts a real TOTP. A recovery code triggers a 72-hour security hold during which publishing and unpublishing are blocked.')),
+            h('span', { className: 'sd-field-hint' },
+              t('两个更省事的选择：', 'Two easier options: '),
+              h('a', { className: 'sd-link', href: `https://www.npmjs.com/package/${name}/access`, target: '_blank', rel: 'noopener noreferrer' }, t('在 npm 网页删除', 'delete on npm')),
+              t('，或 '),
+              h('a', { className: 'sd-link', href: 'https://www.npmjs.com/settings/~/two-factor-authentication', target: '_blank', rel: 'noopener noreferrer' }, t('去开启 2FA', 'enable 2FA')),
+              t('（开启时会显示二维码和 secret，可导入电脑上的验证器）。', ' (setup shows a QR code and secret you can import into a desktop authenticator).'))),
           danger: true,
           confirmLabel: t('确认删除', 'Remove'),
           onConfirm: async () => {
@@ -1177,7 +1274,7 @@ window.__ModuleLoader__.load({
               version: unpublish.whole ? '' : version,
               force: true,
               confirmName: unpublish.confirmName.trim(),
-              otp: unpublish.otp.trim(),
+              otp: OT.npmOtp.trim(),
             })
             toast(t('删除成功', 'Removed'), 'ok')
             if (unpublish.whole) {
@@ -1271,9 +1368,8 @@ window.__ModuleLoader__.load({
                         },
                           h('option', { value: '' }, t('选择版本', 'select version')),
                           info.versions.map((version) => h('option', { key: version.version, value: version.version }, version.version))),
-                      h(TextInput, { placeholder: 'OTP（若开启 2FA）', value: unpublish.otp, onChange: (event) => setUnpublish({ ...unpublish, otp: event.target.value }), maxLength: 6 }),
                       h(Btn, { size: 'sm', variant: 'danger', onClick: askUnpublish }, h(Icons.trash, null), t('删除', 'Remove')))
-                    : h('div', { className: 'sd-field-hint' }, t('npm 只允许同一天内重新发布被删除的版本。', 'npm lets you republish a removed version only within the same day.')))),
+                    : h('div', { className: 'sd-field-hint' }, t('npm 只允许同一天内重新发布被删除的版本；删除需要在 npm 网页或 npm CLI 完成。', 'npm only allows republishing a removed version the same day; deletion must be done on the npm website or with the npm CLI.')))),
               h('section', { className: 'sd-subcard' },
                 h('div', { className: 'sd-subhead' }, h('h3', null, t('访问级别', 'Access')), h(Icons.shield, null)),
                 h('div', { className: 'sd-inline-row' },
@@ -1352,7 +1448,7 @@ window.__ModuleLoader__.load({
     // ── GitHub repos ───────────────────────────────────────────────────────
 
     function ReposPage(props) {
-      const { status, t, lang, toast, fail, openPush, openReleases, refreshStatus, go } = props
+      const { status, t, lang, toast, fail, openPush, openReleases, refreshStatus, setConfirm } = props
       const [repos, setRepos] = React.useState([])
       const [loading, setLoading] = React.useState(true)
       const [reposError, setReposError] = React.useState(null)
@@ -1402,19 +1498,72 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const missingDeleteScope = connected &&
+        Array.isArray(status?.github?.scopes) && status.github.scopes.length > 0 &&
+        !status.github.scopes.includes('delete_repo')
+
+      const askDeleteRepo = (repo) => {
+        resetScratch()
+        setConfirm?.({
+          title: t(`删除仓库 ${repo.fullName}？`, `Delete ${repo.fullName}?`),
+          body: t('将永久删除该仓库及其所有代码、Issue、Release 与 tag；GitHub 不提供回收站。', 'This permanently deletes the repository, all code, issues, releases and tags; GitHub has no trash.'),
+          note: h('div', { className: 'sd-confirm-otp' },
+            missingDeleteScope
+              ? h(React.Fragment, null,
+                h('strong', { className: 'sd-confirm-warn' }, t('当前 Token 缺少 delete_repo 权限', 'This token lacks delete_repo')),
+                h('span', { className: 'sd-field-hint' },
+                  t('你的 Token scopes 是 ', 'Your token scopes are '),
+                  h('code', null, (status.github.scopes ?? []).join(', ')),
+                  t('，里面没有 delete_repo，所以删除一定会被 GitHub 拒绝。', ' — no delete_repo, so GitHub will always refuse.')),
+                h('a', {
+                  className: 'sd-btn sd-btn-sm sd-btn-primary',
+                  href: 'https://github.com/settings/tokens',
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                }, t('去 GitHub 勾选 delete_repo 并重新生成', 'Add delete_repo on GitHub'))  ,
+                h('span', { className: 'sd-field-hint' },
+                  t('重新生成后回到「GitHub 仓库」顶部更新 Token 即可。', 'After regenerating, update the token at the top of GitHub repos.')))
+              : h(React.Fragment, null,
+                h('span', { className: 'sd-field-hint' }, t(`输入 ${repo.fullName} 确认；需要该仓库的 Administration 权限。`, `Type ${repo.fullName}; requires Administration access to this repository.`)),
+                h(TextInput, {
+                  autoFocus: true,
+                  placeholder: repo.fullName,
+                  onChange: (event) => { OT.confirmText = event.target.value },
+                }))),
+          danger: true,
+          confirmLabel: t('永久删除仓库', 'Delete repository'),
+          onConfirm: async () => {
+            if (missingDeleteScope) {
+              throw new Error(t('Token 缺少 delete_repo，请先在 GitHub 上重新生成 Token。', 'The token lacks delete_repo; regenerate it on GitHub first.'))
+            }
+            if (OT.confirmText.trim() !== repo.fullName) {
+              throw new Error(t(`请准确输入 ${repo.fullName}`, `Type ${repo.fullName} exactly`))
+            }
+            await call('github.delete-repo', {
+              owner: repo.owner,
+              repo: repo.name,
+              force: true,
+              confirmName: OT.confirmText.trim(),
+            })
+            toast(t(`已删除 ${repo.fullName}`, `Deleted ${repo.fullName}`), 'ok')
+            await load(true)
+            refreshStatus()
+          },
+        })
+      }
+
       if (!connected) {
         return h('div', { className: 'sd-page' },
           h(PageHead, {
             eyebrow: 'GITHUB',
             title: t('GitHub 仓库', 'GitHub repos'),
-            desc: t('连接 GitHub 后可以列出仓库、推送目录、创建 Release。', 'Connect GitHub to list repositories, push a directory and create releases.'),
-            actions: h(Btn, { variant: 'primary', onClick: () => go('settings') }, t('连接 GitHub', 'Connect GitHub')),
+            desc: t('账号、仓库、Release 与推送；连接后可以列出仓库、推送目录、创建 Release。', 'Account, repositories, releases and pushes.'),
           }),
+          h(GithubAccountCard, { status, t, toast, fail, refreshStatus }),
           h(EmptyState, {
             icon: h(Icons.github, null),
             title: t('GitHub 尚未连接', 'GitHub is not connected'),
-            body: t('用设备流或 Personal Access Token 登录；令牌只保存在本机。', 'Sign in with the device flow or a personal access token; the token stays local.'),
-            action: h(Btn, { variant: 'primary', onClick: () => go('settings') }, t('去设置', 'Open settings')),
+            body: t('在上方用设备流或 Personal Access Token 登录；令牌只保存在本机。', 'Sign in above with the device flow or a personal access token; the token stays local.'),
           }))
       }
 
@@ -1431,17 +1580,7 @@ window.__ModuleLoader__.load({
             'Repositories you own or collaborate on; push a directory as a commit, and attach the npm tarball to a release.'),
           actions: h(Btn, { onClick: () => load(true), busy: loading }, h(Icons.refresh, null), t('刷新', 'Refresh')),
         }),
-        h('div', { className: 'sd-account-strip' },
-          status.github.avatarUrl
-            ? h('img', { className: 'sd-avatar', src: status.github.avatarUrl, alt: '' })
-            : h('span', { className: 'sd-avatar sd-avatar-fallback' }, h(Icons.github, null)),
-          h('div', { className: 'sd-account-copy' },
-            h('strong', null, `@${status.github.login}`),
-            h('span', null, status.github.name ? `${status.github.name} · ${t('已连接', 'connected')}` : t('已连接', 'connected'))),
-          h('div', { className: 'sd-account-tags' },
-            (status.github.scopes ?? []).slice(0, 5).map((scope) => h(Chip, { key: scope, tone: 'plain' }, scope)),
-            h('a', { className: 'sd-link', href: `https://github.com/${status.github.login}`, target: '_blank', rel: 'noopener noreferrer' }, t('打开主页', 'Profile'))),
-        ),
+        h(GithubAccountCard, { status, t, toast, fail, refreshStatus }),
         h('div', { className: 'sd-repo-layout' },
           h('section', { className: 'sd-repo-main' },
             h('div', { className: 'sd-toolbar' },
@@ -1477,6 +1616,7 @@ window.__ModuleLoader__.load({
                     h('div', { className: 'sd-repo-actions' },
                       h(Btn, { size: 'sm', onClick: () => openPush(repo) }, t('推送目录', 'Push dir')),
                       h(Btn, { size: 'sm', variant: 'ghost', onClick: () => openReleases(repo) }, t('Releases', 'Releases')),
+                      h(Btn, { size: 'sm', variant: 'danger', onClick: () => askDeleteRepo(repo) }, h(Icons.trash, null), t('删除', 'Delete')),
                       repo.htmlUrl ? h('a', {
                         className: 'sd-btn sd-btn-sm sd-btn-ghost', href: repo.htmlUrl, target: '_blank', rel: 'noopener noreferrer',
                       }, t('打开', 'Open')) : null))))),
@@ -1665,7 +1805,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.3', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.4', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),
@@ -1816,12 +1956,9 @@ window.__ModuleLoader__.load({
         h(PageHead, {
           eyebrow: 'SETTINGS',
           title: t('设置', 'Settings'),
-          desc: t('账号、默认发布参数与网络诊断。令牌只保存在本机，界面永远只显示账号信息。',
-            'Accounts, publish defaults and network diagnostics. Tokens stay on this machine and are never shown.'),
+          desc: t('默认发布参数、网络诊断与安全说明。账号连接已移到 npm 包库 / GitHub 仓库顶部。',
+            'Publish defaults, network diagnostics and security. Account connections live at the top of npm packages / GitHub repos.'),
         }),
-        h('div', { className: 'sd-settings-grid' },
-          h(NpmAccountCard, { status, t, toast, fail, refreshStatus }),
-          h(GithubAccountCard, { status, t, toast, fail, refreshStatus })),
         h('section', { className: 'sd-card sd-settings-card' },
           h('div', { className: 'sd-subhead' }, h('h3', null, t('默认发布参数', 'Publish defaults')), h(Icons.tag, null)),
           prefs === null
@@ -1893,7 +2030,7 @@ window.__ModuleLoader__.load({
     }
 
     function NpmAccountCard(props) {
-      const { status, t, toast, fail, refreshStatus } = props
+      const { status, t, toast, fail, refreshStatus, packageCount } = props
       const lang = useLang()
       const [token, setToken] = React.useState('')
       const [registry, setRegistry] = React.useState(status?.registries?.npm ?? '')
@@ -1901,6 +2038,7 @@ window.__ModuleLoader__.load({
       const [verifying, setVerifying] = React.useState(false)
       const [expiryDraft, setExpiryDraft] = React.useState(status?.npm?.expiresAt ?? '')
       const [savingExpiry, setSavingExpiry] = React.useState(false)
+      const [syncingToken, setSyncingToken] = React.useState(false)
 
       React.useEffect(() => {
         if (typeof status?.npm?.expiresAt === 'string') setExpiryDraft(status.npm.expiresAt)
@@ -1949,6 +2087,21 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const syncTokenInfo = async () => {
+        setSyncingToken(true)
+        try {
+          const result = await call('npm.token-info')
+          toast(result.matched
+            ? t('Token 信息已同步', 'Token info synced')
+            : t('没有匹配到当前 Token 的信息', 'No metadata matched the current token'), result.matched ? 'ok' : 'error')
+          refreshStatus()
+        } catch (error) {
+          fail(error)
+        } finally {
+          setSyncingToken(false)
+        }
+      }
+
       const disconnect = () => {
         call('npm.disconnect').then(() => {
           toast(t('npm 已断开', 'npm disconnected'), 'ok')
@@ -1962,13 +2115,31 @@ window.__ModuleLoader__.load({
           status?.npm?.connected ? h(Chip, { tone: 'ok' }, t('已连接', 'connected')) : h(Chip, { tone: 'warn' }, t('未连接', 'offline'))),
         status?.npm?.connected
           ? h(React.Fragment, null,
-            h('div', { className: 'sd-account-line' }, h('span', null, t('账号', 'Account')), h('strong', { className: 'sd-mono' }, `@${status.npm.username ?? '?'}`)),
+            h('div', { className: 'sd-account-hero' },
+              h('span', { className: 'sd-avatar sd-avatar-lg sd-avatar-npm' }, (status.npm.username ?? 'N').slice(0, 1).toUpperCase()),
+              h('div', { className: 'sd-account-hero-copy' },
+                h('strong', null, `@${status.npm.username ?? '?'}`),
+                h('span', null, status.npm.email || t('npm registry 账号', 'npm registry account')),
+                status.npm.username
+                  ? h('a', { className: 'sd-link', href: `https://www.npmjs.com/~${encodeURIComponent(status.npm.username)}`, target: '_blank', rel: 'noopener noreferrer' }, t('打开 npm 主页', 'Open npm profile'))
+                  : null),
+              h('span', { className: 'sd-mono sd-stat-inline' }, `${packageCount ?? status.counts?.npmPackages ?? '—'} ${t('个包', 'packages')}`)),
             h('div', { className: 'sd-account-line' }, h('span', null, 'registry'), h('span', { className: 'sd-mono sd-ellipsis' }, status.npm.registry ?? '—')),
+            h('div', { className: 'sd-account-line' }, h('span', null, t('Token 名称', 'Token name')), h('span', null, status.npm.tokenName || '—')),
+            status.npm.tokenPermissions?.length > 0
+              ? h('div', { className: 'sd-account-line sd-account-line-wrap' }, h('span', null, t('Token 权限', 'Token permissions')),
+                h('span', { className: 'sd-chips' }, status.npm.tokenPermissions.map((permission) => h(Chip, { key: `${permission.name}:${permission.action}`, tone: permission.action === 'write' ? 'ok' : 'plain' }, `${permission.name}:${permission.action}`))))
+              : null,
+            status.npm.tokenScopes?.length > 0
+              ? h('div', { className: 'sd-account-line sd-account-line-wrap' }, h('span', null, 'scopes'),
+                h('span', { className: 'sd-chips' }, status.npm.tokenScopes.map((scope, index) => h(Chip, { key: `${scope.type}-${scope.name}-${index}`, tone: 'plain' }, scope.name ? `${scope.type}:${scope.name}` : scope.type))))
+              : null,
             status.npm.bypass2fa === true
               ? h('div', { className: 'sd-account-line' }, h('span', null, t('Token 类型', 'Token type')), h('span', { className: 'sd-inline-row' },
                 h(Chip, { tone: 'danger' }, 'Bypass 2FA'),
-                h('span', { className: 'sd-field-hint' }, t('2027-01 会被 npm 撤销', 'revoked by npm in Jan 2027'))))
+                h('span', { className: 'sd-field-hint' }, t('2027-01 会被 npm 撤销；新建 Token 时可取消勾选，改用 TOTP 仍可发布', 'revoked by npm in Jan 2027; create a non-bypass token and use TOTP to keep publishing'))))
               : null,
+            h('div', { className: 'sd-account-line' }, h('span', null, t('连接时间', 'Connected')), h('span', null, formatTime(status.npm.connectedAt, lang))),
             h('div', { className: 'sd-account-line' }, h('span', null, t('最近验证', 'Last verified')), h('span', null, formatTime(status.npm.lastVerifiedAt, lang))),
             h('div', { className: 'sd-account-line' }, h('span', null, t('Token 到期', 'Token expiry')), h('span', null,
               status.npm.expiresAt === null
@@ -1991,6 +2162,7 @@ window.__ModuleLoader__.load({
               : null,
             h('div', { className: 'sd-inline-row' },
               h(Btn, { size: 'sm', variant: 'ghost', busy: verifying, onClick: verify }, t('验证', 'Verify')),
+              h(Btn, { size: 'sm', variant: 'ghost', busy: syncingToken, onClick: syncTokenInfo }, t('同步 Token 信息', 'Sync token info')),
               h(Btn, { size: 'sm', variant: 'danger', onClick: disconnect }, t('断开', 'Disconnect'))))
           : h(React.Fragment, null,
             h(Field, { label: t('npm Access Token', 'npm access token'), hint: t('Permission 选 Read and write (publish and stage)。如账户用 TOTP，可不必勾 Bypass 2FA，在发布向导里填 6 位验证码；Bypass 2FA 的 Token 会在 2027-01 被 npm 撤销。', 'Choose Read and write (publish and stage). With TOTP you can leave Bypass 2FA off and enter the 6-digit code in the wizard; npm revokes Bypass-2FA tokens in January 2027.') },
@@ -2018,6 +2190,14 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false)
       const [device, setDevice] = React.useState(null)
       const [error, setError] = React.useState(null)
+
+      React.useEffect(() => {
+        if (status?.github?.connected !== true) return
+        if (status.github.publicRepos !== null || status.github.htmlUrl !== null) return
+        call('github.verify').then(() => refreshStatus()).catch(() => {
+          /* metadata is best-effort; the profile still works without it */
+        })
+      }, [status?.github?.connected, status?.github?.publicRepos, status?.github?.htmlUrl, refreshStatus])
       const [copied, setCopied] = React.useState(false)
       const pollTimer = React.useRef(null)
       const mounted = React.useRef(true)
@@ -2116,13 +2296,22 @@ window.__ModuleLoader__.load({
           ? h(React.Fragment, null,
             h('div', { className: 'sd-github-user' },
               status.github.avatarUrl
-                ? h('img', { className: 'sd-avatar', src: status.github.avatarUrl, alt: '' })
-                : h('span', { className: 'sd-avatar sd-avatar-fallback' }, h(Icons.github, null)),
-              h('div', null,
-                h('strong', { className: 'sd-mono' }, `@${status.github.login ?? '?'}`),
-                h('div', { className: 'sd-field-hint' }, status.github.kind === 'pat' ? 'Personal Access Token' : 'OAuth device flow'))),
-            h('div', { className: 'sd-chips' }, (status.github.scopes ?? []).map((scope) => h(Chip, { key: scope, tone: 'plain' }, scope))),
+                ? h('img', { className: 'sd-avatar sd-avatar-lg', src: status.github.avatarUrl, alt: '' })
+                : h('span', { className: 'sd-avatar sd-avatar-lg sd-avatar-fallback' }, h(Icons.github, null)),
+              h('div', { className: 'sd-github-copy' },
+                h('strong', null, status.github.name || `@${status.github.login ?? '?'}`),
+                h('span', { className: 'sd-mono' }, `@${status.github.login ?? '?'}`)),
+              status.github.htmlUrl
+                ? h('a', { className: 'sd-link', href: status.github.htmlUrl, target: '_blank', rel: 'noopener noreferrer' }, t('打开 GitHub 主页', 'Open GitHub profile'))
+                : null),
+            h('div', { className: 'sd-account-line' }, h('span', null, t('认证方式', 'Auth')), h('span', null, status.github.kind === 'pat' ? 'Personal Access Token' : 'OAuth device flow')),
+            h('div', { className: 'sd-account-line' }, h('span', null, t('公开仓库', 'Public repos')), h('span', { className: 'sd-mono' }, status.github.publicRepos ?? '—')),
+            h('div', { className: 'sd-account-line' }, h('span', null, t('连接时间', 'Connected')), h('span', null, formatTime(status.github.connectedAt, lang))),
             h('div', { className: 'sd-account-line' }, h('span', null, t('最近验证', 'Last verified')), h('span', null, formatTime(status.github.lastVerifiedAt, lang))),
+            h('div', { className: 'sd-account-line sd-account-line-wrap' }, h('span', null, 'scopes'),
+              h('span', { className: 'sd-chips' }, (status.github.scopes ?? []).length === 0
+                ? h('span', { className: 'sd-field-hint' }, t('未返回 scopes（fine-grained PAT 正常）', 'No scopes returned (normal for fine-grained PATs)'))
+                : (status.github.scopes ?? []).map((scope) => h(Chip, { key: scope, tone: 'plain' }, scope)))),
             h('div', { className: 'sd-inline-row' },
               h(Btn, { size: 'sm', variant: 'ghost', onClick: () => call('github.verify').then(() => { toast(t('验证完成', 'Verified'), 'ok'); refreshStatus() }).catch(fail) }, t('验证', 'Verify')),
               h(Btn, { size: 'sm', variant: 'danger', onClick: disconnect }, t('断开', 'Disconnect'))))
@@ -2242,8 +2431,8 @@ window.__ModuleLoader__.load({
         if (dir.trim() !== '' && inspect === null && inspectBusy === false) inspectProject(dir)
       }, [])
 
-      const goSettings = () => {
-        window.dispatchEvent(new CustomEvent('ship-deck:tab', { detail: 'settings' }))
+      const goAccounts = () => {
+        window.dispatchEvent(new CustomEvent('ship-deck:tab', { detail: npmReady ? 'repos' : 'packages' }))
         onClose()
       }
 
@@ -2437,11 +2626,11 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'sd-note sd-note-warn sd-inline-row' },
               h('span', { style: { flex: 1 } },
                 !npmReady && !githubReady
-                  ? t('npm 与 GitHub 都未连接：先在设置里连接账号，发布目标才可选。', 'Neither npm nor GitHub is connected; connect an account in Settings to pick a target.')
+                  ? t('npm 与 GitHub 都未连接：先在「npm 包库 / GitHub 仓库」顶部连接账号，发布目标才可选。', 'Neither npm nor GitHub is connected; connect an account at the top of npm packages / GitHub repos to pick a target.')
                   : !npmReady
                     ? t('npm 未连接：npm 与 GitHub Packages 目标需要它。', 'npm is not connected; npm and GitHub Packages targets need it.')
                     : t('GitHub 未连接：GitHub Packages 与 Release 目标需要它。', 'GitHub is not connected; GitHub Packages and release targets need it.')),
-              h(Btn, { size: 'sm', variant: 'default', onClick: goSettings }, t('去设置', 'Open settings')))
+              h(Btn, { size: 'sm', variant: 'default', onClick: goAccounts }, t('去连接', 'Connect')))
             : null,
           h('div', { className: 'sd-target-grid' },
             targetCard('npm', 'npm registry', status?.registries?.npm ?? 'registry.npmjs.org', npmReady, t('发布到 npmjs.com', 'Publish to npmjs.com')),
@@ -2802,6 +2991,8 @@ window.__ModuleLoader__.load({
 .sd-step.is-active { background: var(--sd-yellow); color: #141414; }
 .sd-step-num { width: 18px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: #141414; color: #fff8e7; font-family: ui-monospace, monospace; font-size: 10px; flex: none; }
 .sd-stat-stack { display: flex; flex-direction: column; gap: 12px; }
+.sd-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+.sd-page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .sd-stat { border: 2.5px solid var(--sd-line); border-radius: 13px; padding: 13px 15px; box-shadow: 4px 4px 0 var(--sd-shadow); color: #141414; flex: 1; display: flex; flex-direction: column; justify-content: space-between; min-height: 105px; }
 .sd-stat-mint { background: var(--sd-mint); }
 .sd-stat-blue { background: var(--sd-blue); }
@@ -2924,6 +3115,12 @@ window.__ModuleLoader__.load({
 .sd-bundle-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .sd-bundle-copy strong { font-size: 13px; }
 .sd-bundle-copy span { font-size: 12px; line-height: 1.45; color: var(--dsw-alias-label-secondary, #888); }
+.sd-bundle-error { color: var(--dsw-alias-label-danger, #d33); font-size: 11px; }
+.sd-switch { flex: none; width: 48px; height: 28px; padding: 2px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.35)); border-radius: 999px; background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.2)); cursor: pointer; transition: background 140ms ease; }
+.sd-switch.is-on { background: var(--dsw-alias-fill-primary, #2f5bff); }
+.sd-switch-knob { display: block; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transform: translateX(0); transition: transform 140ms ease; }
+.sd-switch.is-on .sd-switch-knob { transform: translateX(20px); }
+.sd-switch:disabled { opacity: .6; cursor: wait; }
 .sd-bundle-action { flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); color: var(--dsw-alias-label-primary, inherit); border-radius: 8px; padding: 6px 11px; font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .sd-bundle-action:hover { background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.18)); }
 
@@ -2934,7 +3131,18 @@ window.__ModuleLoader__.load({
 .sd-account-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11.5px; border-bottom: 1px dotted var(--sd-line); padding-bottom: 4px; }
 .sd-account-line > span:first-child { color: var(--sd-muted); }
 .sd-github-user { display: flex; align-items: center; gap: 10px; }
-.sd-github-user strong { font-size: 13px; }
+.sd-github-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sd-github-copy strong { font-size: 14px; }
+.sd-github-copy span { color: var(--sd-muted); font-size: 11px; }
+.sd-account-hero { display: flex; align-items: center; gap: 12px; padding-bottom: 4px; }
+.sd-account-hero-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.sd-account-hero-copy strong { font-size: 15px; font-family: ui-monospace, monospace; }
+.sd-account-hero-copy > span { color: var(--sd-muted); font-size: 11px; }
+.sd-stat-inline { margin-left: auto; font-size: 12px; color: var(--sd-muted); }
+.sd-avatar-lg { width: 52px; height: 52px; }
+.sd-avatar-npm { display: inline-flex; align-items: center; justify-content: center; background: var(--sd-yellow); color: #141414; font-size: 22px; font-weight: 900; border-radius: 12px; }
+.sd-account-line-wrap { align-items: flex-start; }
+.sd-account-line-wrap > .sd-chips { justify-content: flex-end; max-width: 70%; }
 .sd-tabs { display: flex; gap: 3px; border: 2px solid var(--sd-line); border-radius: 8px; padding: 2px; background: var(--sd-panel-2); }
 .sd-tab { flex: 1; border: 0; border-radius: 5px; background: transparent; color: var(--sd-muted); font-family: inherit; font-size: 11px; font-weight: 700; padding: 5px 8px; cursor: pointer; }
 .sd-tab.is-active { background: #141414; color: #fff8e7; }
@@ -2960,11 +3168,19 @@ window.__ModuleLoader__.load({
 .sd-modal-body { padding: 15px 16px; overflow: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 11px; }
 .sd-modal-foot { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 11px 16px; border-top: 2.5px solid var(--sd-line); background: var(--sd-panel-2); flex-wrap: wrap; }
 .sd-confirm-band { padding: 9px 16px 0; }
+.sd-confirm-otp { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 11px; border: 1.5px dashed var(--sd-line); border-radius: 8px; }
+.sd-confirm-warn { font-size: 12.5px; font-weight: 800; }
+.sd-confirm-otp-warn { font-size: 11px; line-height: 1.5; color: #8a2b2b; background: rgba(255, 120, 120, .14); border-radius: 5px; padding: 6px 8px; }
 .sd-confirm-text { margin: 8px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--sd-muted); }
 .sd-toasts { position: absolute; left: 22px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 7px; max-width: 440px; }
 .sd-toast { display: flex; align-items: flex-start; gap: 8px; border: 2.5px solid var(--sd-line); border-radius: 10px; padding: 9px 11px; font-size: 12px; line-height: 1.45; box-shadow: 4px 4px 0 var(--sd-shadow); background: var(--sd-mint); color: #141414; animation: sd-toast-in 160ms ease; }
 .sd-toast-error { background: var(--sd-pink); }
 .sd-toast-icon { display: inline-flex; margin-top: 1px; flex: none; }
+.sd-toast-body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sd-toast-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.sd-toast-link { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border: 1.5px solid var(--sd-line); border-radius: 5px; background: #fff8e7; color: #141414; font-size: 11px; font-weight: 700; text-decoration: none; }
+.sd-toast-link:hover { background: var(--sd-mint); }
+.sd-toast-link .sd-i { width: 11px; height: 11px; }
 @keyframes sd-toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* wizard */
@@ -3020,6 +3236,7 @@ window.__ModuleLoader__.load({
   .sd-h1 { font-size: 36px; }
   .sd-dash-grid { grid-template-columns: 1fr; }
   .sd-stat-stack { flex-direction: row; flex-wrap: wrap; }
+  .sd-stat-grid { grid-template-columns: 1fr; }
   .sd-stat { min-width: 150px; }
   .sd-repo-layout, .sd-settings-grid { grid-template-columns: 1fr; }
   .sd-split, .sd-wizard-grid { grid-template-columns: 1fr; }
@@ -3095,40 +3312,79 @@ window.__ModuleLoader__.load({
           return () => tag.remove()
         }, `${NS}: styles`)
 
-        ctx.slots.inject('main', () => ctx.slots.register(
-          { name: 'main', key: 'ship-deck' },
-          () => h(Panel, null),
-        ))
-
-        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register(
-          {
-            name: 'sidebar.panellist',
-            id: 'ship-deck',
-            order: 30,
-            label: () => (detectLang() === 'zh' ? '发布仓' : 'Release Depot'),
-          },
-          (props) => h(SidebarIcon, props),
-        ))
-
-        ctx.slots.inject('settings.section', () => ctx.slots.register(
-          {
-            name: 'settings.section',
-            id: 'ship-deck',
-            order: 50,
-            label: () => (detectLang() === 'zh' ? '发布仓' : 'Release Depot'),
-          },
-          () => h(Panel, null),
-        ))
-
-        ctx.slots.inject('settings.section.icon', () => ctx.slots.register(
-          { name: 'settings.section.icon', id: 'ship-deck' },
-          (props) => h(SidebarIcon, props),
-        ))
-
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
           { name: 'plugins.bundle.config', key: 'dsh-release-depot' },
           () => h(BundleEntryCard, null),
         ))
+
+        let mainStop = null
+        let sidebarStop = null
+        const enableSidebar = () => {
+          if (mainStop === null) {
+            mainStop = ctx.slots.inject('main', () => ctx.slots.register(
+              { name: 'main', key: 'ship-deck' },
+              () => h(Panel, null),
+            ))
+          }
+          if (sidebarStop === null) {
+            sidebarStop = ctx.slots.inject('sidebar.panellist', () => ctx.slots.register(
+              {
+                name: 'sidebar.panellist',
+                id: 'ship-deck',
+                order: 30,
+                label: () => (detectLang() === 'zh' ? '发布仓' : 'Release Depot'),
+              },
+              (props) => h(SidebarIcon, props),
+            ))
+          }
+        }
+        const disableSidebar = () => {
+          if (mainStop !== null) {
+            mainStop()
+            mainStop = null
+          }
+          if (sidebarStop !== null) {
+            sidebarStop()
+            sidebarStop = null
+          }
+          const layout = hostServices.layout
+          try {
+            if (layout?.panelInfo?.getSnapshot?.()?.activePanelId === 'ship-deck') layout.selectPanel(null)
+          } catch {
+            /* ignore panel navigation failures */
+          }
+        }
+        const readStoredVisibility = () => {
+          try {
+            return localStorage.getItem('sd.sidebarVisible') !== 'false'
+          } catch {
+            return true
+          }
+        }
+        const applyVisibility = (visible) => {
+          setSidebarVisibleState(visible)
+          if (visible) enableSidebar()
+          else disableSidebar()
+          try {
+            localStorage.setItem('sd.sidebarVisible', visible ? 'true' : 'false')
+          } catch {
+            /* ignore */
+          }
+        }
+        hostServices.sidebar = {
+          isEnabled: () => sidebarVisible,
+          subscribe: subscribeSidebar,
+          setEnabled: (next) => applyVisibility(next !== false),
+        }
+        applyVisibility(readStoredVisibility())
+        call('prefs.get')
+          .then((result) => {
+            const visible = result?.prefs?.sidebarVisible !== false
+            if (visible !== sidebarVisible) applyVisibility(visible)
+          })
+          .catch(() => {
+            /* keep the local preference */
+          })
       },
     }
     return module.exports

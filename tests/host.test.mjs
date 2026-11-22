@@ -90,6 +90,7 @@ try {
   const noOtp = await service.publish({ dir: fixture, targets: ['npm'] })
   assert.equal(noOtp.ok, false)
   assert.equal(noOtp.record.targets[0].error.code, 'EOTP')
+  assert.match(noOtp.record.targets[0].error.hint, /6 位|动态码|Bypass/)
   log('publish without OTP is rejected with EOTP')
 
   const published = await service.publish({ dir: fixture, targets: ['npm'], otp: '123456' })
@@ -154,6 +155,19 @@ try {
   const wildcardGuard = await service.npmUnpublish({ name: '@acme/demo-pkg', version: '*', force: true, otp: '123456' }).catch((error) => error)
   assert.equal(serializeError(wildcardGuard).code, 'ECONFIRM')
   log('whole-package removal requires explicit confirmation')
+
+  // Regression: the 2FA requirement must be reported as "account has no 2FA"
+  // when npm answers 403 without an OTP challenge, so the UI never asks the
+  // user to hunt for a code that npm will not inspect.
+  registry.state.requireOtp = 'account-2fa'
+  const needsAccount2fa = await service.npmSetTag({
+    name: '@acme/demo-pkg', tag: 'probe', version: '1.2.4',
+  }).catch((error) => error)
+  const serialized2fa = serializeError(needsAccount2fa)
+  assert.equal(serialized2fa.code, 'E2FAACCOUNT')
+  assert.equal(serialized2fa.details.otpUseful, false)
+  registry.state.requireOtp = null
+  log('2FA-missing-account is distinguished from a wrong OTP')
 
   const ghConnected = await service.githubConnectPat({ token: github.token })
   assert.equal(ghConnected.github.login, 'shiptester')
@@ -224,9 +238,11 @@ try {
   assert.equal(history[0].actor, 'ui')
   log('history records every publish attempt')
 
-  const prefs = service.setPrefs({ access: 'public', tag: 'next', defaultTargets: ['github-release'] })
+  const prefs = service.setPrefs({ access: 'public', tag: 'next', defaultTargets: ['github-release'], sidebarVisible: false })
   assert.equal(prefs.prefs.tag, 'next')
+  assert.equal(prefs.prefs.sidebarVisible, false)
   assert.deepEqual(prefs.prefs.defaultTargets, ['github-release'])
+  service.setPrefs({ sidebarVisible: true })
   log('preferences persist')
 
   const diagnostics = await service.diagnostics({ ping: true })

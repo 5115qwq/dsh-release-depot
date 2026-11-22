@@ -16,7 +16,7 @@
 - **一个面板管两个发布目的地**：npm、GitHub Packages、GitHub Release 在同一个发布向导里，支持一次多目标发布。
 - **不是“模拟发布”**：自己实现了 npm registry 协议（tarball、integrity、dist-tags、deprecate、unpublish、owner、access、OTP），发布前强制预检，发布后写本地记录。
 - **AI 能真正操作**：`publish_package` 可一次完成 npm 发布 + GitHub 推送 + Release + 附件；工具和 UI 调用同一个 service，不会出现两套逻辑。
-- **入口不抢输入框**：左侧栏「发布仓」、设置 → 发布仓、插件详情页均可进入；跟随 DSH 日间/夜间主题。
+- **入口不抢输入框**：左侧栏「发布仓」；插件详情页提供「左侧栏『发布仓』」开关，默认打开；关闭后隐藏入口。跟随 DSH 日间/夜间主题。
 - **本地优先**：令牌只存本机 DSH home；AI 工具的目录参数被限制在工作区内。
 
 ---
@@ -72,7 +72,7 @@ dsh plugin --profile desktop add dsh-release-depot
 dsh-release-depot
 ```
 
-安装完成后**完全退出并重新打开 DSH**（Host 半是 ESM 模块，重启最稳）。左侧栏出现「发布仓」；也可以在 **设置 → 发布仓** 打开。
+安装完成后**完全退出并重新打开 DSH**（Host 半是 ESM 模块，重启最稳）。左侧栏出现「发布仓」；如果隐藏了入口，可在插件详情页的开关重新打开。
 
 ### 从 GitHub 安装
 
@@ -96,7 +96,7 @@ dsh plugin --profile desktop add link:<本目录绝对路径>
 
 ## 使用
 
-1. 打开「发布仓」→ **设置**：
+1. **npm 包库**顶部连接 npm；**GitHub 仓库**顶部连接 GitHub：
    - **npm**：打开
      `https://www.npmjs.com/settings/~/tokens`（登录后 `~` 就是当前账号）创建 **Granular Access Token**；
      Permissions 选 **Read and write (publish and stage)**。
@@ -108,7 +108,7 @@ dsh plugin --profile desktop add link:<本目录绝对路径>
    - 目录需要合法 `package.json`（name / version / 非 private）；
    - 选择目标；GitHub Release 可自动创建仓库并附带 tarball；
    - 预检会真实打包并读取 registry；确认后才写入。
-3. 发布后到 **npm 包库** / **发布记录** 查看结果与链接。
+3. 发布后到 **工作台 → 发布记录** 查看结果与链接。
 
 ### 目录与打包规则
 

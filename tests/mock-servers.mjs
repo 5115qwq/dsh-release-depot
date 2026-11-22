@@ -101,6 +101,9 @@ export async function startMockRegistry(options = {}) {
         if (doc === undefined) return json(response, 404, { error: 'Not found' })
         if (request.method === 'GET' && tag === null) return json(response, 200, { ...doc['dist-tags'], _etag: 'x' })
         if (request.method === 'PUT' && tag !== null) {
+          if (state.requireOtp === 'account-2fa') {
+            return json(response, 403, { error: 'Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.' })
+          }
           if (state.otpRequired && request.headers['npm-otp'] !== otp) {
             return json(response, 401, { error: '[EOTP] This operation requires a one-time password from your authenticator.' })
           }
