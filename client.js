@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.9'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.10'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -848,7 +848,9 @@ window.__ModuleLoader__.load({
             color: 'blue',
             label: t('GitHub Releases', 'GITHUB RELEASES'),
             value: status?.counts?.githubReleases ?? 0,
-            sub: githubConnected ? `@${status.github.login ?? '?'}` : t('连接 GitHub 后可创建', 'connect GitHub'),
+            sub: githubConnected
+              ? t(`@${status.github.login ?? '?'} · 本工具创建`, `@${status.github.login ?? '?'} · by this tool`)
+              : t('连接 GitHub 后可创建', 'connect GitHub'),
           }),
           h(StatCard, {
             color: 'pink',
@@ -1195,7 +1197,7 @@ window.__ModuleLoader__.load({
         }
         setOwnerBusy(true)
         try {
-          await call('npm.change-owner', { name, user: target, action, otp: ownerForm.otp.trim() })
+          await call('npm.change-owner', { name, user: target, action, otp: ownerForm.otp.trim(), force: action === 'remove' })
           toast(action === 'add' ? t('维护者已添加', 'Maintainer added') : t('维护者已移除', 'Maintainer removed'), 'ok')
           setOwnerForm({ user: '', otp: ownerForm.otp })
           await load()
@@ -1855,7 +1857,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.9', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.10', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),

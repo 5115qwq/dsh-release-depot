@@ -305,6 +305,24 @@ export async function startMockGitHub(options = {}) {
           state.trees.push(body)
           return json(response, 201, { sha: `tree-${state.trees.length}` })
         }
+        // Recursive tree read, used to detect files that a `replace` push would
+        // delete. Resolve a commit sha -> its tree -> its entries.
+        if (request.method === 'GET' && rest.startsWith('/git/trees/')) {
+          const sha = rest.slice('/git/trees/'.length).split('?')[0]
+          const commit = state.commits.find((entry, index) => `commit-${index + 1}` === sha)
+          let tree = null
+          if (commit !== undefined) {
+            const treeIndex = Number(String(commit.tree).replace('tree-', '')) - 1
+            tree = state.trees[treeIndex] ?? null
+          } else if (sha === 'init-commit') {
+            tree = { tree: [] }
+          } else {
+            const treeIndex = Number(String(sha).replace('tree-', '')) - 1
+            tree = state.trees[treeIndex] ?? null
+          }
+          if (tree === null) return json(response, 404, { message: 'Not Found' })
+          return json(response, 200, { sha, tree: tree.tree ?? [] })
+        }
         if (request.method === 'POST' && rest === '/git/commits') {
           const body = JSON.parse((await readBody(request)).toString('utf8'))
           state.commits.push(body)

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.10
+
+### 破坏性操作的闸门（社区反馈 #4 #5 + 本轮自查）
+
+主线原则：**加法可以宽松，减法必须严格。** 判断依据是「调用方可能只读 `ok`，不读 `warnings`」。
+
+- **已存在的版本在真发布前拦截（`EVERSIONEXISTS`）**：预检早就计算出 `versionExists: true`，但真实发布路径仍直接 `PUT`，白打一次 registry 才等 409。现在两条路径共用同一判定，直接拒绝并给出 latest 与版本总数。
+- **`replace` 删除必须显式确认（`EREMOVE`）**：`syncMode: 'replace'` 会删掉远端独有文件，之前只写一条 warning 就照删。现在默认拒绝，需传 `allowRemove: true`；`merge` 模式不受影响。
+- **移除维护者必须显式确认（`ECONFIRM`）**：`remove-owner` 会立即收回对方写权限，之前**完全没有确认**，比删除文件更严重。现在要求 `force: true`（面板确认框会自动带上）。
+- **修复「闸门被 catch 吞掉」**：`replace` 的删除检测在外层 `try/catch` 里，闸门抛出的 `EREMOVE` 被 `catch {}` 静默吞掉，表现为「改了但没生效」。现在 `EREMOVE` 会被重新抛出。
+
+### 反馈中的其余 4 项
+
+- **202 同步提示**：`pending: true` 时返回两条 warning，说明 registry 仍在同步，以及 pnpm 可能因 `minimumReleaseAge`/镜像延迟仍装到旧版本，并给出指定精确版本的命令。
+- **顶层 warnings 汇总**：各目标内部的 warnings 现在也会汇总到发布记录的顶层，调用方只看 `record` 也能看到 202 提示，不必翻进单个 target。
+- **`counts` 口径**：`npmPackages` 现在区分「未加载」（`null` + `npmPackagesLoaded: false`）与「加载了但格式异常」（`undefined`）；`githubReleases` 增加 `scope: 'published-by-this-tool'`，面板副标题改为「本工具创建」，说明它不等于仓库里的 Release 总数。
+- **push 耗时可见性**：返回值新增 `durationMs` 与 `perFileAvgMs`；文件数超过 300 时提示考虑改用 `git push`。
+
+### 测试
+
+- 新增回归测试：已存在版本被拦截（断言**没有发生任何 PUT**）、`replace` 删除需要 `allowRemove`、移除维护者需要 `force`。
+- mock GitHub 补充递归 tree 读取，使删除检测可被真实测试覆盖。
+
 ## 1.1.9
 
 ### `github_publish` 的 push 语义（社区反馈）

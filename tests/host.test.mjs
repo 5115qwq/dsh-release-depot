@@ -111,11 +111,17 @@ try {
   assert.equal(demo.version, '1.2.3')
   log('account package list reads identity and latest versions')
 
-  // A second publish would conflict.
+  // A second publish must be rejected BEFORE hitting the registry, so the
+  // caller learns immediately instead of after a round-trip that 409s.
+  const requestsBefore = registry.state.requests.length
   const conflict = await service.publish({ dir: fixture, targets: ['npm'], otp: '123456' })
   assert.equal(conflict.ok, false)
-  assert.equal(conflict.record.targets[0].error.code, 'EPUBLISHCONFLICT')
-  log('republishing an existing version maps to EPUBLISHCONFLICT')
+  assert.equal(conflict.record.targets[0].error.code, 'EVERSIONEXISTS')
+  const putAttempts = registry.state.requests
+    .slice(requestsBefore)
+    .filter((entry) => entry.method === 'PUT').length
+  assert.equal(putAttempts, 0, 'an existing version must not reach the registry PUT')
+  log('republishing an existing version is rejected before any PUT')
 
   const tags = await service.npmSetTag({ name: '@acme/demo-pkg', tag: 'next', version: '1.2.3', otp: '123456' })
   assert.equal(tags.ok, true)
@@ -135,7 +141,10 @@ try {
   assert.equal(owners.maintainers[0].name, 'shiptester')
   await service.npmChangeOwner({ name: '@acme/demo-pkg', user: 'teammate', action: 'add', otp: '123456' })
   assert.ok(registry.state.docs.get('@acme/demo-pkg').maintainers.some((entry) => entry.name === 'teammate'))
-  await service.npmChangeOwner({ name: '@acme/demo-pkg', user: 'teammate', action: 'remove', otp: '123456' })
+  // Removing a maintainer revokes their write access irreversibly, so it needs force.
+  const ownerGuard = await service.npmChangeOwner({ name: '@acme/demo-pkg', user: 'teammate', action: 'remove', otp: '123456' }).catch((error) => error)
+  assert.equal(serializeError(ownerGuard).code, 'ECONFIRM')
+  await service.npmChangeOwner({ name: '@acme/demo-pkg', user: 'teammate', action: 'remove', otp: '123456', force: true })
   assert.equal(registry.state.docs.get('@acme/demo-pkg').maintainers.some((entry) => entry.name === 'teammate'), false)
   log('deprecate, undeprecate, access level and maintainers work')
 
@@ -459,7 +468,7 @@ try {
 
     const pushClient = new GitHubClient({ network, token: github.token, apiBase: github.url })
     const pushResult = await pushClient.pushDirectory({
-      owner: 'shiptester', repo: 'demo-repo', dir: e2eDir, branch: 'main', message: 'e2e', syncMode: 'replace',
+      owner: 'shiptester', repo: 'demo-repo', dir: e2eDir, branch: 'main', message: 'e2e', syncMode: 'replace', allowRemove: true,
     })
     assert.equal(pushResult.ok, true)
     assert.equal(pushResult.source, 'working-tree')
@@ -492,6 +501,29 @@ try {
   assert.equal(github.state.commits.length, beforeCommits, 'a preview must not create a commit')
   assert.equal(typeof previewed.commitSha, 'undefined', 'a preview has no commit sha')
   log('push preview reports the plan without writing')
+
+  // Deletion is irreversible, so replace mode must refuse to shrink the remote
+  // unless the caller opts in. A warning alone is not enough: an agent that
+  // only reads `ok` would silently lose remote files.
+  const rmDir = await mkdtemp(join(tmpdir(), 'ship-rm-'))
+  createdFixtures.push(rmDir)
+  await writeFile(join(rmDir, 'keep.js'), 'k\n')
+  await writeFile(join(rmDir, 'gone.js'), 'g\n')
+  await service.githubPush({
+    owner: 'shiptester', repo: 'demo-repo', dir: rmDir, branch: 'main', syncMode: 'replace', allowRemove: true,
+  })
+  await rm(join(rmDir, 'gone.js'))
+  const blocked = await service.githubPush({
+    owner: 'shiptester', repo: 'demo-repo', dir: rmDir, branch: 'main', syncMode: 'replace',
+  }).catch((error) => error)
+  assert.equal(serializeError(blocked).code, 'EREMOVE')
+  assert.ok(serializeError(blocked).details.removed.includes('gone.js'))
+  const allowed = await service.githubPush({
+    owner: 'shiptester', repo: 'demo-repo', dir: rmDir, branch: 'main', syncMode: 'replace', allowRemove: true,
+  })
+  assert.equal(allowed.ok, true)
+  assert.deepEqual(allowed.removed, ['gone.js'])
+  log('replace deletions require an explicit allowRemove')
 
   // Package names reach the registry as URL path segments, so an unvalidated
   // name could traverse to another endpoint with the user's token attached.
