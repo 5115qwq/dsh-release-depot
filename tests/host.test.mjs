@@ -166,8 +166,19 @@ try {
   const serialized2fa = serializeError(needsAccount2fa)
   assert.equal(serialized2fa.code, 'E2FAACCOUNT')
   assert.equal(serialized2fa.details.otpUseful, false)
+  // Every help link the error hands the user must be a real npm route.
+  // `/settings/~/two-factor-authentication` looks plausible but 404s on npm;
+  // the working route is `/settings/~/tfa`.
+  assert.equal(serialized2fa.details.npmTwoFactorPage, 'https://www.npmjs.com/settings/~/tfa')
+  for (const [key, url] of Object.entries(serialized2fa.details)) {
+    if (key === 'authKind' || typeof url !== 'string' || !url.startsWith('http')) continue
+    assert.ok(
+      !/two-factor-authentication/.test(url),
+      `${key} must not point at the 404 route: ${url}`,
+    )
+  }
   registry.state.requireOtp = null
-  log('2FA-missing-account is distinguished from a wrong OTP')
+  log('2FA-missing-account is distinguished from a wrong OTP, with a working 2FA URL')
 
   const ghConnected = await service.githubConnectPat({ token: github.token })
   assert.equal(ghConnected.github.login, 'shiptester')
