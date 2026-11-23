@@ -175,10 +175,6 @@ window.__ModuleLoader__.load({
       return links
     }
 
-    function errorHint(error) {
-      return typeof error?.hint === 'string' ? error.hint : ''
-    }
-
     function formatTime(value, lang) {
       if (typeof value !== 'string' || value === '') return '—'
       const date = new Date(value)
@@ -598,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.5'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.6'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -1805,7 +1801,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.5', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.6', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),
@@ -1837,62 +1833,6 @@ window.__ModuleLoader__.load({
     }
 
     // ── records + settings ─────────────────────────────────────────────────
-
-    function RecordsPage(props) {
-      const { t, lang, toast, fail, setConfirm } = props
-      const [items, setItems] = React.useState(null)
-      const [loading, setLoading] = React.useState(true)
-      const [error, setError] = React.useState(null)
-
-      const load = React.useCallback(async () => {
-        setLoading(true)
-        try {
-          const result = await call('history', { limit: 100 })
-          setItems(result.items)
-          setError(null)
-        } catch (err) {
-          setError(err)
-          fail(err)
-        } finally {
-          setLoading(false)
-        }
-      }, [fail])
-
-      React.useEffect(() => { load() }, [load])
-
-      const clear = () => {
-        setConfirm?.({
-          title: t('清空本地发布记录', 'Clear local publish log'),
-          body: t('只会删除本地记录文件，不会影响 npm 或 GitHub 上的包与 Release。', 'Only the local log is deleted; packages and releases stay untouched.'),
-          confirmLabel: t('清空', 'Clear'),
-          onConfirm: async () => {
-            await call('history.clear')
-            setItems([])
-            toast(t('记录已清空', 'Log cleared'), 'ok')
-          },
-        })
-      }
-
-      return h('div', { className: 'sd-page' },
-        h(PageHead, {
-          eyebrow: 'LOCAL LOG',
-          title: t('发布记录', 'Publish log'),
-          desc: t('每次发布（包括失败与 dry run）都记录在本机 DSH home，最多保留 200 条。',
-            'Every publish, including failures and dry runs, is logged in your local DSH home (max 200).'),
-          actions: h(React.Fragment, null,
-            h(Btn, { onClick: load, busy: loading }, h(Icons.refresh, null), t('刷新', 'Refresh')),
-            h(Btn, { variant: 'ghost', onClick: clear }, h(Icons.trash, null), t('清空', 'Clear'))),
-        }),
-        items === null && error !== null
-          ? h('div', { className: 'sd-note sd-note-danger sd-inline-row' },
-            h('span', { style: { flex: 1 } }, errorText(error)),
-            h(Btn, { size: 'sm', onClick: load }, t('重试', 'Retry')))
-          : items === null || (loading && items.length === 0)
-            ? h('div', { className: 'sd-loading' }, h(Spinner, { large: true }))
-            : items.length === 0
-              ? h(EmptyState, { icon: h(Icons.record, null), title: t('还没有发布记录', 'No publish records'), body: t('发布一次后，每一条结果都会出现在这里。', 'Each publish result appears here.') })
-              : h(HistoryTable, { items, t, lang }))
-    }
 
     function SettingsPage(props) {
       const { status, t, lang, toast, fail, refreshStatus } = props

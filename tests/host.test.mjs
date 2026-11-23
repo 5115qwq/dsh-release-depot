@@ -12,6 +12,7 @@ import { Network } from '../lib/net.js'
 import { ShipDeck, serializeError } from '../lib/service.js'
 import { ShipDeckStore } from '../lib/store.js'
 import { startMockGitHub, startMockRegistry } from './mock-servers.mjs'
+import { parseRange, satisfies } from '../lib/semver.js'
 
 const createdFixtures = []
 
@@ -255,6 +256,48 @@ try {
   assert.deepEqual(prefs.prefs.defaultTargets, ['github-release'])
   service.setPrefs({ sidebarVisible: true })
   log('preferences persist')
+
+  // release_status must stay inside the tool-output budget: status() no longer
+  // inlines history, and the tool passes the compacted summary instead.
+  const agentPayload = JSON.stringify({ status: service.status(), history: service.historySummary(10) })
+  assert.ok(agentPayload.length <= 12000, `release_status payload too large: ${agentPayload.length}`)
+  assert.equal(service.status().recentHistory, undefined)
+  assert.equal(service.status().lastRecord === null || typeof service.status().lastRecord === 'object', true)
+  const panel = service.panelStatus()
+  assert.ok(Array.isArray(panel.recentHistory))
+  assert.ok(Array.isArray(panel.recentProjects))
+  log('agent status payload stays under the output limit; panel status keeps previews')
+
+  // npm accepts a space between an operator and its version, and the tool
+  // schema advertises that form; it must not be reported as "no match".
+  for (const range of ['>= 2.0.0', '< 3.0.0', '^ 1.2.0', '>= 2.0.0 < 3.0.0']) {
+    assert.doesNotThrow(() => parseRange(range), `range should parse: ${range}`)
+  }
+  assert.equal(satisfies('2.5.0', '>= 2.0.0'), true)
+  assert.equal(satisfies('2.5.0', '< 3.0.0'), true)
+  assert.equal(satisfies('2.5.0', '^ 1.2.0'), false)
+  log('spaced comparator ranges parse like npm')
+
+  // A preflight must fail when npm would reject the publish outright, because
+  // the panel blocks the publish button on any failed preflight target.
+  const unscoped = await makeFixture('1.3.0', 'plain-pkg')
+  const restrictedDry = await service.publish({
+    dir: unscoped, targets: ['npm'], access: 'restricted', dryRun: true,
+  })
+  assert.equal(restrictedDry.ok, false, 'restricted + unscoped must fail preflight')
+  assert.equal(restrictedDry.record.targets[0].error.code, 'EUNSCOPED')
+  log('preflight rejects restricted on an unscoped package')
+
+  // github_publish documents that `owner` defaults to the connected login; the
+  // service must actually apply that default rather than failing with EINVALID.
+  const pushNoOwner = await service.githubPush({
+    repo: 'owner-default-repo', dir: fixture, create: true, private: false,
+  })
+  assert.equal(pushNoOwner.ok, true, JSON.stringify(pushNoOwner))
+  assert.equal(pushNoOwner.owner, 'shiptester')
+  const releasesNoOwner = await service.githubReleases({ repo: 'owner-default-repo' })
+  assert.equal(releasesNoOwner.ok, true)
+  log('GitHub owner defaults to the connected login')
 
   const diagnostics = await service.diagnostics({ ping: true })
   assert.equal(diagnostics.ping.npm.ok, true)

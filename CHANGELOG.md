@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.6
+
+### 修复
+
+- **预检会放过注定失败的发布**：`restricted` + 非 scoped 包在 dry run 里显示通过，真实发布才报 `EUNSCOPED`。现在预检执行与真实发布相同的校验，面板不会再把「绿」的预检当成可发布。
+- **`github_publish` 的 `owner` 默认值不生效**：文档写「默认用已连接账号」，实际传空就报 `EINVALID`。`githubReleases` / `githubRelease` / `githubPush` 现在真正回退到登录账号，未连接时给出明确错误。
+- **`info` 输出被截断成坏 JSON**：成熟包可能有 250 个版本 + 8KB readme，超过 12000 字符上限后被硬切，模型拿到无法解析的内容。现在工具侧只投影最新信息 + 最近 20 个版本 + 版本总数，readme 不再进模型上下文。
+- **截断不再产生坏 JSON**：超限时保留摘要、给出明确提示（原长度/上限/如何缩小范围），并按行边界截断。
+- **`deprecate` 拒绝带空格的版本范围**：schema 示例写的是 `<1.2.3`，但 `>= 2.0.0`、`< 3.0.0` 这类会解析失败并误导为「没有版本满足范围」。现在与 npm 一样接受运算符后的空格。
+- **包列表缓存忽略 `limit`**：先请求 5 个再请求 100 个会拿到旧的 5 个（缓存 120 秒）。缓存键已包含 limit。
+- **Release notes 可能缺少安装说明**：`targets` 里 `github-release` 排在 `npm` 前面时，生成说明时 npm 结果还不存在，安装段被永久省略。现在固定把 `github-release` 放到最后执行。
+- **GitHub Packages 静默改成 public**：向导显示 `restricted` 时该目标仍写死 public，失败还会发生在 npm 已发布之后。现在显式固定 public 并给出警告，不再静默。
+- **npm 账号邮箱进入模型上下文**：`release_status` 的 `status.npm.email` 会被工具带出。现在工具输出过滤 `email` 与 `maintainers[].email`。
+- **诊断信息泄露本机绝对路径**：`diagnostics` 的 `storage.authFile` 等字段带完整路径。现在工具层把 `C:\...`、`/home/...` 一律替换为 `<local path>`。
+
+### 优化
+
+- `release_status` 载荷从约 20KB 降到约 5KB（不再内联重复历史），稳定落在工具输出预算内；面板改用新的 `panelStatus()`，仍保留最近记录与最近项目预览。
+- `status()` 的历史项精简为可操作字段（去掉 integrity/shasum/rateLimit/fileCount 等噪声），完整记录仍可从面板历史读取。
+- 清理死代码：`RecordsPage`（已无路由）、`targetSummary`、`integrityOf`、`errorHint`，以及不再使用的 `node:crypto` 导入。
+- 新增回归测试：带空格版本范围、restricted 预检、owner 默认值、载荷预算、2FA 链接正确性。
+
+### 说明
+
+- 1.1.5 已发布且不可覆盖，本轮全部修复以 1.1.6 发布。
+
 ## 1.1.5
 
 ### 修复

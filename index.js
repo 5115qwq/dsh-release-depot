@@ -13,7 +13,7 @@ import { createTools, SHIP_DECK_PROMPT } from './lib/tools.js'
 
 export const name = 'dsh-release-depot'
 
-const VERSION = '1.1.5'
+const VERSION = '1.1.6'
 const MAX_BODY_BYTES = 1024 * 1024
 
 function normalizeConfig(raw) {
@@ -80,7 +80,7 @@ async function readJson(request, limitBytes = MAX_BODY_BYTES) {
 /** The complete RPC surface. Keeping it as data makes the allowlist auditable. */
 function createOperations(service) {
   const ops = {
-    status: () => service.status(),
+    status: () => service.panelStatus(),
     diagnostics: (input) => service.diagnostics(input),
 
     'npm.connect': (input) => service.connectNpm(input),
@@ -156,7 +156,7 @@ export function apply(ctx, rawConfig = {}) {
         }
         if (method === 'GET' && url.pathname === '/dsh-release-depot/status') {
           try {
-            sendJson(response, 200, { ok: true, result: service.status() })
+            sendJson(response, 200, { ok: true, result: service.panelStatus() })
           } catch (error) {
             sendJson(response, 200, { ok: false, error: serializeError(error) })
           }
