@@ -13,7 +13,7 @@ import { createTools, SHIP_DECK_PROMPT } from './lib/tools.js'
 
 export const name = 'dsh-release-depot'
 
-const VERSION = '1.1.10'
+const VERSION = '1.1.11'
 const MAX_BODY_BYTES = 1024 * 1024
 
 function normalizeConfig(raw) {

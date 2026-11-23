@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.11
+
+### 修复
+
+- **工具返回的 `ok` 不反映操作结果（严重）**：`npm_publish` / `publish_package` 的 `ok()` 包装器无条件返回 `ok: true`，因此「发布部分失败」「版本已存在被拒」这类结果在工具层仍报成功。只看 `ok` 的调用方（AI 尤其如此）会误以为发布成功。现在新增 `okOrFail()`，`ok` 由操作本身的 `result.ok` 决定。
+- **`npm_registry whoami` 在 Token 失效时报成功**：返回 `ok: true` 且摘要写「已失效」，语义自相矛盾。现在失效或验证失败时返回 `ok: false`。
+- **`allowRemove` 只有实现、没有接线**：1.1.10 给 `replace` 模式加了删除闸门，但 `allowRemove` 参数**没有写进 `github_publish` 的 schema，也没有从工具层传给 service**。后果是模型调用方永远无法通过该参数确认删除，遇到 `EREMOVE` 时只能被迫改用 `merge`，却没有任何途径真正执行删除。现已补齐 tool schema 声明 → 参数传递 → service 透传 → GitHub 客户端使用，四层完整打通。
+- **`publish_package` 的 `github-release` 目标同样无法删除**：该目标也会用 `replace` 推送目录，但 `publish_package` 既没有 `allowRemove` 参数，`service.publish` 也没把它传给 `pushDirectory`。结果是**目录变小后永远发布不出去**（`EREMOVE` 死胡同）。现已补齐 schema 与透传。
+- **面板的「推送目录」在 replace 模式下必然失败**：对话框传了 `syncMode: 'replace'` 但不传 `allowRemove`，`EREMOVE` 会让每次镜像推送都报错。现在面板的确认框本身即为用户同意（对话框已写明会删除远端文件），据此传 `allowRemove`；确认框还会直接列出将从预检结果中删除的文件清单。
+
+### 测试
+
+- 新增回归测试：`github_publish` 与 `publish_package` 的 schema 都必须声明 `allowRemove`；`github-release` 发布在目录变小时先被 `EREMOVE` 拒绝、传 `allowRemove` 后成功（端到端）。
+- 新增回归测试：工具层 `ok` 必须反映发布结果——重复发布第二个版本时 `ok: false` 且 `error.code === 'EVERSIONEXISTS'`。
+- 新增接线审计结论：`service.publish` 读取的 14 个 `githubOptions` 字段，`publish_package` 全部双向可达；`npm_registry` 的 16 个 action 全部有处理分支。
+
+### 说明
+
+- 这是一个补丁版本，修复 1.1.10 遗漏的接线问题，无其他行为变更。
+- 关于上一版的教训：防护代码写了但没接通（`allowRemove` 未进 schema）、防护代码被 `catch` 吞掉（`EREMOVE` 曾被外层 catch 静默吃掉）、成功标志与实际结果脱节（`ok()` 恒为 true），属于同一类「写了却没生效」。本版发布前已加入接线与语义两道检查。
+
 ## 1.1.10
 
 ### 破坏性操作的闸门（社区反馈 #4 #5 + 本轮自查）

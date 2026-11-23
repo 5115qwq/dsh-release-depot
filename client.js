@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.10'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.11'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -1678,6 +1678,10 @@ window.__ModuleLoader__.load({
             dir: form.dir.trim(),
             message: form.message.trim(),
             syncMode: form.syncMode,
+            // The panel already asked the user to confirm a mirror push (the
+            // dialog above names the consequence), so that confirmation is the
+            // opt-in the service requires for deletions.
+            allowRemove: form.syncMode !== 'merge',
             create: false,
           })
           setResult(value)
@@ -1720,10 +1724,14 @@ window.__ModuleLoader__.load({
 
       const submit = () => {
         if (form.syncMode === 'replace') {
+          const wouldDelete = Array.isArray(result?.removed) ? result.removed : []
           setConfirm?.({
             title: t('镜像推送会删除远端文件', 'Mirror push deletes remote files'),
             body: t(`replace 模式会把 ${repo.fullName} 的 ${form.branch || repo.defaultBranch || '默认'} 分支变成当前目录的完整快照，远端独有的文件会被删除。`,
               `Replace mode turns ${repo.fullName} into a snapshot of this directory; files that exist only on the remote are deleted.`),
+            note: wouldDelete.length > 0
+              ? h('div', null, t(`将删除 ${wouldDelete.length} 个文件：`, `${wouldDelete.length} files will be deleted: `), wouldDelete.slice(0, 10).join(', '), wouldDelete.length > 10 ? ' …' : '')
+              : t('建议先点「预检」，确认将被删除的文件清单。', 'Run Preview first to see exactly which files would be deleted.'),
             danger: true,
             confirmLabel: t('继续推送', 'Push anyway'),
             onConfirm: doPush,
@@ -1857,7 +1865,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.10', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.11', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),

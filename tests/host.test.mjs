@@ -525,6 +525,92 @@ try {
   assert.deepEqual(allowed.removed, ['gone.js'])
   log('replace deletions require an explicit allowRemove')
 
+  // The tool schema must expose allowRemove, otherwise a model can never opt in
+  // and EREMOVE becomes a dead end. Assert the wiring end to end: schema ->
+  // tool arg -> service -> github client.
+  const { createTools } = await import('../lib/tools.js')
+  const toolList = createTools(service, {}, {})
+  const githubTool = toolList.find((tool) => tool.name === 'github_publish')
+  assert.ok(githubTool, 'github_publish tool must exist')
+  const allowRemoveSchema = githubTool.parameters?.properties?.allowRemove
+  assert.ok(allowRemoveSchema, 'github_publish must declare allowRemove')
+  assert.equal(allowRemoveSchema.type, 'boolean')
+  const pushDrySchema = githubTool.parameters?.properties?.dryRun
+  assert.ok(pushDrySchema, 'github_publish must declare dryRun for push previews')
+  log('github_publish schema exposes allowRemove and dryRun')
+
+  // publish_package pushes to GitHub through the github-release target, so it
+  // must expose allowRemove too — otherwise publishing a shrunken directory is
+  // a dead end (EREMOVE with no way to opt in).
+  const publishTool = toolList.find((tool) => tool.name === 'publish_package')
+  assert.ok(publishTool, 'publish_package tool must exist')
+  assert.ok(
+    publishTool.parameters?.properties?.allowRemove,
+    'publish_package must declare allowRemove for the github-release target',
+  )
+  log('publish_package schema exposes allowRemove')
+
+  // End-to-end: the github-release target must honour allowRemove, otherwise a
+  // shrinking project can never be published.
+  const shrinkDir = await mkdtemp(join(tmpdir(), 'ship-shrink-'))
+  createdFixtures.push(shrinkDir)
+  await writeFile(join(shrinkDir, 'package.json'), JSON.stringify({ name: 'shrink-pkg', version: '1.0.0', description: 'd' }))
+  await writeFile(join(shrinkDir, 'a.js'), 'a\n')
+  await writeFile(join(shrinkDir, 'b.js'), 'b\n')
+  const firstShrink = await service.publish({
+    dir: shrinkDir,
+    targets: ['github-release'],
+    github: { owner: 'shiptester', repo: 'shrink-repo', create: true, allowRemove: true },
+  })
+  assert.equal(firstShrink.ok, true, JSON.stringify(firstShrink.record.targets[0]))
+  await rm(join(shrinkDir, 'b.js'))
+  const noOptIn = await service.publish({
+    dir: shrinkDir,
+    targets: ['github-release'],
+    github: { owner: 'shiptester', repo: 'shrink-repo' },
+  })
+  assert.equal(noOptIn.ok, false, 'shrinking must be rejected without allowRemove')
+  assert.equal(noOptIn.record.targets[0].error.code, 'EREMOVE')
+  const optIn = await service.publish({
+    dir: shrinkDir,
+    targets: ['github-release'],
+    github: { owner: 'shiptester', repo: 'shrink-repo', allowRemove: true },
+  })
+  assert.equal(optIn.ok, true, JSON.stringify(optIn.record.targets[0]))
+  log('github-release publishes honour allowRemove')
+
+  // The tool result's `ok` must reflect the operation, not just "the call did
+  // not throw". A partially failed publish previously reported ok:true, so a
+  // caller reading only `ok` believed the publish succeeded.
+  const guardDir = await mkdtemp(join(tmpdir(), 'ship-toolok-'))
+  createdFixtures.push(guardDir)
+  await writeFile(join(guardDir, 'package.json'), JSON.stringify({ name: '@acme/toolok-pkg', version: '1.0.0', description: 'd' }))
+  const toolList2 = createTools(service, {}, { toolPaths: [guardDir] })
+  const npmPublish = toolList2.find((tool) => tool.name === 'npm_publish')
+  const firstOk = await npmPublish.execute({ dir: guardDir, otp: '123456' })
+  assert.equal(firstOk.ok, true, JSON.stringify(firstOk.summary))
+  const secondFail = await npmPublish.execute({ dir: guardDir, otp: '123456' })
+  assert.equal(secondFail.ok, false, 'a failed publish must report ok:false at the tool level')
+  assert.match(String(secondFail.summary), /失败/)
+  assert.equal(secondFail.data.record.targets[0].error.code, 'EVERSIONEXISTS')
+  log('tool ok reflects publish success, not just absence of a throw')
+
+  // "Not connected" is unconfigured, not a failure: it must stay ok:true so a
+  // caller does not treat "user has not signed in yet" as an error to report.
+  const offlineHome = await mkdtemp(join(tmpdir(), 'ship-offline-'))
+  createdFixtures.push(offlineHome)
+  await mkdir(join(offlineHome, '.dsh-release-depot'), { recursive: true })
+  const offlineService = new ShipDeck({
+    config: { npmRegistry: registry.url },
+    network,
+    store: new ShipDeckStore({ home: offlineHome }),
+  })
+  const offlineNpm = createTools(offlineService, {}, {}).find((tool) => tool.name === 'npm_registry')
+  const notConnected = await offlineNpm.execute({ action: 'whoami' })
+  assert.equal(notConnected.ok, true, 'not connected must not be reported as a failure')
+  assert.match(String(notConnected.summary), /未登录/)
+  log('whoami treats "not connected" as unconfigured, not failure')
+
   // Package names reach the registry as URL path segments, so an unvalidated
   // name could traverse to another endpoint with the user's token attached.
   for (const badName of ['../../-/npm/v1/tokens', 'x/../y', 'a/b/c']) {
