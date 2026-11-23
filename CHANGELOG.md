@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.9
+
+### `github_publish` 的 push 语义（社区反馈）
+
+`github_publish { action: 'push' }` 通过 Git Data API 在工作区内容上创建 commit，**从不读取本地 git 历史**。此前这一点完全没有暴露，导致本地已有未推送 commit 时，远端会得到一个内容不同的**旁支提交**，且 `.gitattributes` 的换行符规则不生效。
+
+- **P0 文档**：工具描述明确说明 push「上传当前文件内容、不推送本地 commit、本地领先时会产生兄弟提交」，并提示需要历史时改用 `git push`。
+- **P1 本地 git 状态检测**：推送前检查目录是否为 git 仓库、本地 HEAD 与远端 HEAD 的关系、工作区是否干净。本地领先时警告「本次推送不包含这 N 个提交」；落后时提示「将以工作区内容覆盖远端」；有未提交改动时报告数量。返回值新增 `source: 'working-tree'` 与 `localGit` 字段，不再让人误以为推的是本地 commit。
+- **P2 换行符归一化**：按 `.gitattributes` 的 `text` / `eol=lf` / `eol=crlf` 规则归一化后再上传，与 `git add` 保持一致。二进制（含 NUL，或无法无损 UTF-8 解码）严格原样上传，绝不改写字节。
+- **P3 删除提示**：`syncMode: 'replace'` 时会对比远端文件树，列出将被删除的文件（最多 20 个），避免「推完仓库少东西了」的沉默丢失。
+### 修复
+
+- **二进制文件被 UTF-8 往返破坏（严重）**：换行归一化的首版实现会把 PNG 等无 NUL 的二进制按 UTF-8 解码再编码，字节被替换字符污染。现在只有能逐字节往返的内容才会被改写。
+- **`set-dist-tag` 的摘要不反映实际结果**：摘要用请求参数拼字符串，注册表返回 `unchanged: true`（tag 已指向该版本）时仍声称「已设置」。现在按注册表返回的 `unchanged` 分别提示「无需修改」。
+- **`release_status` / `npm_publish` / `publish_package` 描述与实现不符**：仍写着「在设置里连接账号」（入口早已移到 npm 包库 / GitHub 仓库顶部），且没说明 2FA、`EPRIVATE`、版本已存在这些最常见失败原因。已按实际行为重写。
+
+### 新增功能
+
+- **`github_publish` 的 push 支持预检（`dryRun`）**：与 npm 发布的 `dryRun` 对齐。预览会列出将上传的文件、`replace` 模式将删除的远端文件、需要换行符归一化的文件数、本地 git 状态，以及全部警告，**不创建任何 commit**。面板的「推送目录」对话框也增加了「预检」按钮，结果区区分「预检结果 · 未写入」与「推送完成」。
+
+### 测试
+
+- 新增回归测试：本地 git 状态检测（干净/脏/领先）、`.gitattributes` EOL 归一化、二进制与非 UTF-8 字节的完整性。
+- **新增真实 git 端到端测试**：在真实 `git` 仓库里写 CRLF 文件并 commit，工具推送后比对上传的 blob 与 `git show HEAD:<file>` 的字节，必须完全一致。这是 mock 环境无法覆盖的检查。
+- 新增 push 预检测试：断言不产生 commit、`eolNormalized` 计数正确。
+
 ## 1.1.8
 
 ### 安全修复

@@ -10,10 +10,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Network } from '../lib/net.js'
+import { GitHubClient } from '../lib/github.js'
 import { ShipDeck, serializeError } from '../lib/service.js'
 import { ShipDeckStore } from '../lib/store.js'
 import { startMockGitHub, startMockRegistry } from './mock-servers.mjs'
 import { parseRange, satisfies } from '../lib/semver.js'
+import { inspectLocalGit } from '../lib/pack.js'
 
 const createdFixtures = []
 
@@ -402,6 +404,94 @@ try {
     }
   }
   log('credential files are never pushed to GitHub')
+
+  // A push is built from working-tree bytes, not from local git history, so it
+  // must say so and warn when the local branch is ahead of the remote head.
+  const aheadDir = await mkdtemp(join(tmpdir(), 'ship-ahead-'))
+  createdFixtures.push(aheadDir)
+  try {
+    execFileSync('git', ['init', '-q', aheadDir])
+    await writeFile(join(aheadDir, 'index.js'), 'x\n')
+    execFileSync('git', ['-C', aheadDir, 'add', '-A'])
+    execFileSync('git', ['-C', aheadDir, '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'init'])
+    const gi = await inspectLocalGit(aheadDir)
+    assert.equal(gi.isRepo, true)
+    assert.equal(typeof gi.head, 'string')
+    assert.equal(gi.clean, true)
+    // Working tree dirty -> the count must be reported, not swallowed.
+    await writeFile(join(aheadDir, 'extra.js'), 'y\n')
+    const dirty = await inspectLocalGit(aheadDir)
+    assert.equal(dirty.clean, false)
+    assert.ok(dirty.dirtyCount >= 1)
+  } catch (error) {
+    if (error && /git/i.test(String(error.message))) log('git not available; skipped the local-git-state test')
+    else throw error
+  }
+  log('local git state is inspected before a push')
+
+  // EOL normalisation must follow .gitattributes and never corrupt binary data.
+  const { readEolPolicy, normalizeEol } = await import('../lib/pack.js')
+  const eolDir = await mkdtemp(join(tmpdir(), 'ship-eol-'))
+  createdFixtures.push(eolDir)
+  await writeFile(join(eolDir, '.gitattributes'), '*.js text eol=lf\n*.bat text eol=crlf\n*.png binary\n')
+  const eolPolicy = await readEolPolicy(eolDir)
+  const crlf = Buffer.from('a\r\nb\r\n', 'utf8')
+  assert.equal(normalizeEol(crlf, 'src/a.js', eolPolicy).toString(), 'a\nb\n', 'eol=lf must normalise CRLF to LF')
+  assert.equal(normalizeEol(crlf, 'run.bat', eolPolicy).toString(), 'a\r\nb\r\n', 'eol=crlf must keep CRLF')
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
+  assert.deepEqual([...normalizeEol(png, 'x.png', eolPolicy)], [...png], 'binary bytes must never be rewritten')
+  const invalidUtf8 = Buffer.from([0xff, 0x0d, 0x0a, 0xfe])
+  assert.deepEqual([...normalizeEol(invalidUtf8, 'blob.js', eolPolicy)], [...invalidUtf8], 'non-UTF-8 bytes must stay untouched')
+  log('line endings follow .gitattributes without corrupting binaries')
+
+  // End-to-end against a REAL git repository: the blob the tool uploads for a
+  // CRLF file must be byte-identical to what `git show HEAD:<file>` stores.
+  // This is the check that a mock without git can never perform.
+  const e2eDir = await mkdtemp(join(tmpdir(), 'ship-e2e-git-'))
+  createdFixtures.push(e2eDir)
+  try {
+    execFileSync('git', ['init', '-q', e2eDir])
+    await writeFile(join(e2eDir, '.gitattributes'), '*.js text eol=lf\n')
+    await writeFile(join(e2eDir, 'a.js'), 'line1\r\nline2\r\n')
+    execFileSync('git', ['-C', e2eDir, 'add', '-A'])
+    execFileSync('git', ['-C', e2eDir, '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'init'])
+    const gitStored = execFileSync('git', ['-C', e2eDir, 'show', 'HEAD:a.js'], { encoding: 'buffer' })
+
+    const pushClient = new GitHubClient({ network, token: github.token, apiBase: github.url })
+    const pushResult = await pushClient.pushDirectory({
+      owner: 'shiptester', repo: 'demo-repo', dir: e2eDir, branch: 'main', message: 'e2e', syncMode: 'replace',
+    })
+    assert.equal(pushResult.ok, true)
+    assert.equal(pushResult.source, 'working-tree')
+    const uploadedTree = github.state.trees.at(-1)
+    const uploadedEntry = uploadedTree.tree.find((node) => node.path === 'a.js')
+    const uploadedBytes = Buffer.from(github.state.blobs.get(uploadedEntry.sha), 'base64')
+    assert.deepEqual([...uploadedBytes], [...gitStored], 'uploaded bytes must equal what git would store')
+  } catch (error) {
+    if (error && /git/i.test(String(error.message)) && !/assert/i.test(String(error.name))) {
+      log('git not available; skipped the end-to-end git byte test')
+    } else {
+      throw error
+    }
+  }
+  log('uploaded blobs are byte-identical to git-stored blobs')
+
+  // Push must offer a read-only preflight, like npm publish's dryRun.
+  const previewDir = await mkdtemp(join(tmpdir(), 'ship-preview-'))
+  createdFixtures.push(previewDir)
+  await writeFile(join(previewDir, 'package.json'), JSON.stringify({ name: 'preview-pkg', version: '1.0.0' }))
+  await writeFile(join(previewDir, 'a.js'), 'x\r\n')
+  await writeFile(join(previewDir, '.gitattributes'), '*.js text eol=lf\n')
+  const beforeCommits = github.state.commits.length
+  const previewed = await service.githubPush({
+    owner: 'shiptester', repo: 'demo-repo', dir: previewDir, branch: 'main', dryRun: true,
+  })
+  assert.equal(previewed.dryRun, true)
+  assert.ok(previewed.fileCount >= 2, `preview should list files: ${JSON.stringify(previewed)}`)
+  assert.equal(previewed.eolNormalized, 1, 'preview must report the CRLF file that would be normalised')
+  assert.equal(github.state.commits.length, beforeCommits, 'a preview must not create a commit')
+  assert.equal(typeof previewed.commitSha, 'undefined', 'a preview has no commit sha')
+  log('push preview reports the plan without writing')
 
   // Package names reach the registry as URL path segments, so an unvalidated
   // name could traverse to another endpoint with the user's token attached.

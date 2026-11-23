@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.8'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.9'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -1687,6 +1687,35 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * Preflight before writing: shows what would be uploaded, which remote
+       * files replace mode would delete, and how many files need line-ending
+       * normalisation. Push is the only destructive action that used to have
+       * no preview.
+       */
+      const preview = async () => {
+        if (form.dir.trim() === '') {
+          toast(t('填写项目目录', 'Enter the project directory'), 'error')
+          return
+        }
+        setBusy(true)
+        try {
+          const value = await call('github.push', {
+            owner: repo.owner,
+            repo: repo.name,
+            branch: form.branch.trim(),
+            dir: form.dir.trim(),
+            syncMode: form.syncMode,
+            dryRun: true,
+          })
+          setResult(value)
+        } catch (error) {
+          fail(error)
+        } finally {
+          setBusy(false)
+        }
+      }
+
       const submit = () => {
         if (form.syncMode === 'replace') {
           setConfirm?.({
@@ -1708,14 +1737,31 @@ window.__ModuleLoader__.load({
         onClose,
         footer: h(React.Fragment, null,
           h(Btn, { variant: 'ghost', onClick: onClose }, t('关闭', 'Close')),
+          h(Btn, { variant: 'default', busy, onClick: preview }, t('预检', 'Preview')),
           h(Btn, { variant: 'primary', busy, onClick: submit }, h(Icons.arrow, null), t('推送', 'Push'))),
       },
         result !== null
           ? h('div', { className: 'sd-result-box' },
-            h('div', { className: 'sd-result-title' }, h(Icons.check, null), t('推送完成', 'Push complete')),
+            h('div', { className: 'sd-result-title' },
+              result.dryRun === true ? h(Icons.warn, null) : h(Icons.check, null),
+              result.dryRun === true ? t('预检结果 · 未写入', 'Preview · nothing written') : t('推送完成', 'Push complete')),
             h('div', { className: 'sd-result-line' }, h('span', null, t('分支', 'branch')), h('span', { className: 'sd-mono' }, result.branch)),
             h('div', { className: 'sd-result-line' }, h('span', null, t('文件', 'files')), h('span', { className: 'sd-mono' }, String(result.fileCount))),
-            h('div', { className: 'sd-result-line' }, h('span', null, 'commit'), h('a', { className: 'sd-link sd-mono', href: result.commitUrl, target: '_blank', rel: 'noopener noreferrer' }, result.commitSha.slice(0, 10))),
+            result.dryRun === true
+              ? h('div', { className: 'sd-result-line' }, h('span', null, t('将删除', 'would delete')), h('span', { className: 'sd-mono' }, String(result.removed?.length ?? 0)))
+              : null,
+            result.dryRun === true && (result.eolNormalized ?? 0) > 0
+              ? h('div', { className: 'sd-result-line' }, h('span', null, t('换行符归一化', 'EOL normalised')), h('span', { className: 'sd-mono' }, String(result.eolNormalized)))
+              : null,
+            Array.isArray(result.removed) && result.removed.length > 0
+              ? h('div', { className: 'sd-field-hint' }, t('将删除：', 'Would delete: '), result.removed.slice(0, 10).join(', '), result.removed.length > 10 ? ' …' : '')
+              : null,
+            Array.isArray(result.warnings) && result.warnings.length > 0
+              ? h('ul', { className: 'sd-warn-list' }, result.warnings.map((warning, index) => h('li', { key: index }, warning)))
+              : null,
+            result.dryRun === true || typeof result.commitSha !== 'string'
+              ? null
+              : h('div', { className: 'sd-result-line' }, h('span', null, 'commit'), h('a', { className: 'sd-link sd-mono', href: result.commitUrl, target: '_blank', rel: 'noopener noreferrer' }, result.commitSha.slice(0, 10))),
             h('div', { className: 'sd-field-hint' }, t('提交后仓库会镜像本次目录快照；选择 merge 则保留远端其他文件。', 'The repository mirrors this snapshot; merge keeps other remote files.')))
           : h(React.Fragment, null,
             h(Field, { label: t('项目目录', 'Project directory'), hint: t('目录必须位于已注册的工作区，或由面板手动选择。', 'The directory must be inside a registered workspace, or chosen from this panel.') },
@@ -1809,7 +1855,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.8', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.9', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),

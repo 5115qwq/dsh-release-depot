@@ -1,6 +1,6 @@
 {
   "name": "dsh-release-depot",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "type": "module",
   "main": "index.js",
   "description": "Release Depot（发布仓）：在 DeepSeek Harness 内登录 npm 与 GitHub，管理包、发布版本、创建 Release，并把同一套发布能力交给 AI 工具调用。",
