@@ -13,7 +13,7 @@ import { createTools, SHIP_DECK_PROMPT } from './lib/tools.js'
 
 export const name = 'dsh-release-depot'
 
-const VERSION = '1.1.6'
+const VERSION = '1.1.8'
 const MAX_BODY_BYTES = 1024 * 1024
 
 function normalizeConfig(raw) {
@@ -53,7 +53,10 @@ function sendText(response, status, text) {
 
 function sameOrigin(request) {
   const origin = request.headers.origin
-  if (origin === undefined || origin === 'null') return true
+  // No Origin header: same-origin fetch or a non-browser client. `null` comes
+  // from sandboxed iframes / data: URLs, i.e. an origin that is NOT this app.
+  if (origin === undefined) return true
+  if (origin === 'null') return false
   const host = request.headers.host
   if (host === undefined) return false
   try {

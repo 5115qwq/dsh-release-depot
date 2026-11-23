@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.1.8
+
+### 安全修复
+
+- **GitHub 推送会把凭据文件推到仓库（严重）**：`walkForGit` 只在目录扫描分支过滤 `.env`/`.npmrc`，走 `git ls-files` 时完全绕过过滤。结果是**已被 git 跟踪的 `.env` 与 `.npmrc`（内含 npm Token）会原样推送到 GitHub 公开仓库**。现在过滤移到公共路径，并扩充到 `.npmrc`/`.netrc`/`.git-credentials`/`id_rsa`/`.pypirc` 等，跳过时给出警告。
+
+### 打包器
+
+- **PAX 回退路径丢失可执行位**：路径超过 ustar 100 字节时走 PAX，两条回退调用漏传 `mode`，`bin` 脚本会变成 `0644`、安装后无法执行。现已传递真实 mode。
+- **长名截断按字符而非字节**：60 个中文字符 = 180 字节，截断后仍溢出导致回退到 `package/file` 占位名，多个长名文件会互相碰撞。现在按 UTF-8 字节截断。
+
+### 逻辑
+
+- **`<=2.3` 这类部分上界排除了合法版本**：npm 把 `<=2.3` 读作 `<2.4.0`（整个 2.3.x），实现却生成 `<=2.3.0`。因此 `deprecate { range: '1.2.3 - 2.3' }` 会静默跳过 2.3.1–2.3.x 却报告成功。现在 `<=`/`>` 的部分上界按 npm 语义展开。
+- **`maxVersion` 会把预发布版当成最新版**：只有一个 `2.0.0-rc.1` 和若干 1.x 时，取消发布后 `latest` 会指向 rc 版。现在优先选正式版本（全为预发布时才取最高预发布）。
+- **前导零版本被接受**：`01.2.3` 按 SemVer 规范非法，之前判为合法。现在拒绝（预发布段仍允许）。
+- **GitHub tag 含斜杠无法删除**：`delete-release` 带 `deleteTag` 时，`v1.0.0/rc` 被整体 `encodeURIComponent` 成 `%2F`，请求 404 而 `allow404` 让调用方以为删成功，tag 实际保留。现在按路径分段编码。
+
+### 健壮性
+
+- **凭据文件损坏被静默当作「从未配置」**：`auth.json` 解析失败时返回 `null`，用户看到的是账号消失而非文件损坏。现在标记 `authCorrupt`，保留原文件不覆盖，并在工作台提示重新连接。
+- **历史记录坏数据渲染成 `null@null`**：手改或旧格式的历史条目会让列表显示 `null`、`NaN`。`summarizeRecord` 现对 package/version/at/duration/targets 做类型规范化。
+
+### AI 工具
+
+- 系统提示词纠正过期信息：账号已在「npm 包库 / GitHub 仓库」顶部连接，不再是「设置」；补充 `dryRun` 通过≠已发布，以及 `E2FAACCOUNT` 表示账号未启用 2FA、填验证码无效时的正确引导。
+
+### 测试
+
+- 新增回归测试：`files` 尾斜杠子树、GitHub 凭据文件过滤、部分比较器 npm 语义。
+- 打包器回归扩展到 `exports` 入口、`main` 缺失告警、`.npmignore` 目录规则。
+
+### 说明
+
+- 建议尽快升级：本版修复了一个会把 npm Token 推送到 GitHub 仓库的泄密路径。
+
+## 1.1.7
+
+### 严重修复（打包器）
+
+- **打出来的 tarball 可能只有 `package.json`**：`collectPackageFiles` 在「无 files 字段」的常规项目里，把未被 `ALWAYS_INCLUDE` 兜底的普通源码文件（`index.js`、`client.js` 等）全部丢弃。也就是说用本插件发布一个普通包，用户装到的会是空壳。已修正包含判定：非修剪模式下只有命中忽略规则才排除。
+- **只要有 `.npmignore` / `.gitignore` 就直接崩溃**：`createIgnoreMatcher` 返回的是函数，但 `collectPackageFiles` 与 `walkForGit` 都按 `matcher.matches(...)` / `matcher(path)` 调用，抛 `TypeError`。现统一为带 `matches` / `negated` 的对象，并同步修正 `walkForGit` 的两处调用。
+- **`.npmignore` 的目录规则不作用于目录内文件**：`.npmignore` 写了 `dist/` 时，`dist/` 被跳过但 `dist/a.js` 仍会被打进包。现在目录规则会连带排除其内容，同时 `!` 取反规则仍然生效。
+- **`files` 字段为白名单时判定走反**：`files` 模式下未列出的路径会被反向包含。现按白名单语义处理。
+
+### 修复
+
+- **`npm access set` 仍发送旧枚举**：`npmSetAccess` 里残留 `'private'` 映射，而 registry 层要求 `restricted`，导致设置访问级别时行为不一致。现三层统一为 `restricted`（`private` 作为友好别名接受）。
+- **包名未校验就拼进 URL（安全）**：`distTags` / `deleteDistTag` 缺少 `isValidPackageName` 守卫，而 `escapedPackageName` 只转义第一个 `/`，`../..` 段会原样进入请求路径并携带用户 Token。现在所有 registry 方法入口统一校验，转义改为替换全部斜杠。
+- **预检不校验 dist-tag**：非法 tag（如 `-bad`）在 dry run 里显示通过，真实发布才报 `ETAGINVALID`，而面板正是靠预检决定能否发布。现在 tag 在发布前统一校验。
+- **非法版本范围被误报为「没有版本匹配」**：`satisfies` 吞掉解析错误返回 `false`，导致 `not-a-range`、`>=` 这类输入被当成空匹配，用户很可能改用 `*` 重试从而废弃所有版本。现在返回 `EINVALIDRANGE` 并附示例，空匹配时也会列出已有版本。
+- **代理凭据可能泄露（安全）**：`redactProxyUrl` 对无 scheme 的 `user:pass@host:port` 不生效，而 `envProxy` 直接读取未规范化的环境变量，凭据会进入诊断输出与模型上下文。现在先文本剥离 userinfo 再解析，两种写法都会脱敏。
+- **删除类 GitHub 操作绕过 owner 默认值**：`delete-repo` / `delete-release` 未走 `resolveOwner`，只传 `repo` 时报出内容为空的 `owner不合法：`。现在统一回退到已连接账号，缺少 `repo` 时给出明确错误。
+- **创建仓库时 `org` 未校验（安全）**：`org` 被原样拼进 `/orgs/<org>/repos`，`..`、`a/b`、`x?y=1` 会改变请求路径或注入查询参数。现在与 `owner`/`repo` 一样经 `assertRepoPart` 校验。
+- **偏好设置里的 tag 校验不一致**：读取时不校验（手改 `prefs.json` 可注入 `-bad`），写入非法值则被静默丢弃却返回成功。现在读写同一套规则，非法值直接报错。
+- **`Origin: null` 被当作同源（安全）**：`null` 来自沙箱 iframe 与 `data:` 文档，并不属于本应用。现在按跨源拒绝处理。
+- **`exports` 入口可能被静默丢弃**：现代 ESM 包只通过 `package.json` 的 `exports` 暴露入口，而打包器只强制包含 `main`/`bin`/`types`。当 `files` 白名单没写入口目录时，发布出去的包无法 `import`。现在递归收集 `exports` 的全部目标并强制包含。
+- **入口缺失时零警告**：`main`/`exports`/`bin` 指向不存在的文件时会静默发布，用户安装后才 `MODULE_NOT_FOUND`。现在打包结果里会明确提示「入口不存在」或「入口未被包含」（glob 条目自动跳过，避免误报）。
+
+### AI 工具
+
+- `npm_registry` 的描述补齐遗漏动作（`undeprecate`、`owners`、`diagnostics`），并说明「普通 Granular Token 需要账号开启 2FA + 当次 6 位码才能 unpublish，否则引导用户去 npm 网页删除」，减少模型误判为可以静默删除。
+
+### 测试
+
+- 新增打包器回归测试：普通源码文件必须进包；`.npmignore` 的 `dist/` 必须连带排除 `dist/a.js` 且不影响其它文件；`exports` 入口必须进包；`main` 缺失必须产生警告。
+- 新增安全回归测试：包名路径穿越、非法 dist-tag、非法版本范围、代理凭据脱敏。
+
+### 说明
+
+- 本轮修复了打包器三处会**导致发布出错误内容或直接失败**的问题，建议尽快升级。
+- 尚未发布。
+
 ## 1.1.6
 
 ### 修复

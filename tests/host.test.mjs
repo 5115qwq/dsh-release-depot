@@ -5,6 +5,7 @@
  * Run: node tests/host.test.mjs
  */
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -276,7 +277,14 @@ try {
   assert.equal(satisfies('2.5.0', '>= 2.0.0'), true)
   assert.equal(satisfies('2.5.0', '< 3.0.0'), true)
   assert.equal(satisfies('2.5.0', '^ 1.2.0'), false)
-  log('spaced comparator ranges parse like npm')
+  // npm reads a partial upper bound as the whole minor: `<=2.3` means `<2.4.0`,
+  // which is what a hyphen range such as `1.2.3 - 2.3` lowers to.
+  assert.equal(satisfies('2.3.9', '1.2.3 - 2.3'), true)
+  assert.equal(satisfies('2.4.0', '1.2.3 - 2.3'), false)
+  assert.equal(satisfies('2.9.9', '1 - 2'), true)
+  assert.equal(satisfies('1.2.9', '<=1.2'), true)
+  assert.equal(satisfies('1.3.0', '<=1.2'), false)
+  log('spaced and partial comparator ranges follow npm semantics')
 
   // A preflight must fail when npm would reject the publish outright, because
   // the panel blocks the publish button on any failed preflight target.
@@ -298,6 +306,144 @@ try {
   const releasesNoOwner = await service.githubReleases({ repo: 'owner-default-repo' })
   assert.equal(releasesNoOwner.ok, true)
   log('GitHub owner defaults to the connected login')
+
+  // Regression: packing used to drop every file that was not force-included,
+  // producing a package containing only package.json. A published tarball must
+  // carry the real source files, and `.npmignore` directory rules must exclude
+  // their contents (`dist/` also drops `dist/a.js`).
+  const { packProject } = await import('../lib/pack.js')
+  const packDir = await mkdtemp(join(tmpdir(), 'ship-pack-'))
+  createdFixtures.push(packDir)
+  await writeFile(join(packDir, 'package.json'), JSON.stringify({ name: 'pack-test', version: '1.0.0', description: 'd' }))
+  await writeFile(join(packDir, 'index.js'), 'module.exports = 1\n')
+  await writeFile(join(packDir, 'keep.js'), 'keep\n')
+  await mkdir(join(packDir, 'dist'))
+  await writeFile(join(packDir, 'dist', 'a.js'), 'a\n')
+  const packed = await packProject(packDir)
+  const packedPaths = packed.files.map((file) => file.path)
+  assert.ok(packedPaths.includes('index.js'), `index.js missing from tarball: ${packedPaths.join(',')}`)
+  assert.ok(packedPaths.includes('keep.js'), `keep.js missing from tarball: ${packedPaths.join(',')}`)
+  assert.ok(packedPaths.includes('package.json'))
+  log('tarball keeps ordinary source files')
+
+  await writeFile(join(packDir, '.npmignore'), 'dist/\n')
+  const packedIgnored = await packProject(packDir)
+  const ignoredPaths = packedIgnored.files.map((file) => file.path)
+  assert.equal(ignoredPaths.includes('dist/a.js'), false, 'dist/ must exclude dist/a.js')
+  assert.ok(ignoredPaths.includes('keep.js'), '.npmignore must not drop unrelated files')
+  log('.npmignore directory rules exclude their contents')
+
+  // A modern package may expose entry points only through `exports`; a `files`
+  // allow-list that omits them must not ship a package that cannot be imported.
+  const exportDir = await mkdtemp(join(tmpdir(), 'ship-exports-'))
+  createdFixtures.push(exportDir)
+  await writeFile(join(exportDir, 'package.json'), JSON.stringify({
+    name: 'export-test', version: '1.0.0', files: ['index.js'],
+    exports: { '.': './dist/index.mjs' }, main: 'index.js',
+  }))
+  await writeFile(join(exportDir, 'index.js'), 'module.exports = 1\n')
+  await mkdir(join(exportDir, 'dist'))
+  await writeFile(join(exportDir, 'dist', 'index.mjs'), 'export default 1\n')
+  const packedExports = await packProject(exportDir)
+  const exportPaths = packedExports.files.map((file) => file.path)
+  assert.ok(exportPaths.includes('dist/index.mjs'), `exports target missing: ${exportPaths.join(',')}`)
+  log('exports entry points are always shipped')
+
+  // A broken `main` must be reported instead of shipping silently.
+  const brokenMainDir = await mkdtemp(join(tmpdir(), 'ship-badmain-'))
+  createdFixtures.push(brokenMainDir)
+  await writeFile(join(brokenMainDir, 'package.json'), JSON.stringify({
+    name: 'broken-main', version: '1.0.0', files: ['index.js'], main: './lib/main.js',
+  }))
+  await writeFile(join(brokenMainDir, 'index.js'), 'x\n')
+  const packedBroken = await packProject(brokenMainDir)
+  assert.ok(
+    packedBroken.warnings.some((warning) => warning.includes('lib/main.js')),
+    `expected a warning about the missing main, got: ${JSON.stringify(packedBroken.warnings)}`,
+  )
+  log('a missing main entry produces a warning')
+
+  // `files` entries with a trailing slash (`"lib/"`) are common and must behave
+  // exactly like `"lib"` — the whole subtree included, nothing else.
+  const slashDir = await mkdtemp(join(tmpdir(), 'ship-slash-'))
+  createdFixtures.push(slashDir)
+  await writeFile(join(slashDir, 'package.json'), JSON.stringify({ name: 'slash-test', version: '1.0.0', files: ['lib/'] }))
+  await mkdir(join(slashDir, 'lib'))
+  await writeFile(join(slashDir, 'lib', 'main.js'), 'm\n')
+  await writeFile(join(slashDir, 'top.js'), 't\n')
+  const packedSlash = await packProject(slashDir)
+  const slashPaths = packedSlash.files.map((file) => file.path)
+  assert.ok(slashPaths.includes('lib/main.js'), `"lib/" must include the subtree: ${slashPaths.join(',')}`)
+  assert.equal(slashPaths.includes('top.js'), false, `"lib/" must exclude siblings: ${slashPaths.join(',')}`)
+  log('files entries with a trailing slash include their subtree')
+
+  // Pushing to GitHub publishes file contents, so credential files must never
+  // be uploaded even when git tracks them (a committed .npmrc holds the token).
+  const { walkForGit } = await import('../lib/pack.js')
+  const secretDir = await mkdtemp(join(tmpdir(), 'ship-secret-'))
+  createdFixtures.push(secretDir)
+  try {
+    execFileSync('git', ['init', '-q', secretDir])
+    await writeFile(join(secretDir, 'index.js'), 'x\n')
+    await writeFile(join(secretDir, '.env'), 'SECRET=1\n')
+    await writeFile(join(secretDir, '.npmrc'), '//registry.npmjs.org/:_authToken=npm_leak\n')
+    execFileSync('git', ['-C', secretDir, 'add', '-A'])
+    const walked = await walkForGit(secretDir)
+    const walkedPaths = walked.files.map((file) => file.path)
+    assert.equal(walkedPaths.includes('.env'), false, '`.env` must not be pushed')
+    assert.equal(walkedPaths.includes('.npmrc'), false, '`.npmrc` must not be pushed')
+    assert.ok(walkedPaths.includes('index.js'))
+    assert.ok(walked.warnings.some((warning) => warning.includes('.npmrc')), 'skipping a secret should warn')
+  } catch (error) {
+    if (error && /git/i.test(String(error.message))) {
+      log('git not available; skipped the GitHub secret-file test')
+    } else {
+      throw error
+    }
+  }
+  log('credential files are never pushed to GitHub')
+
+  // Package names reach the registry as URL path segments, so an unvalidated
+  // name could traverse to another endpoint with the user's token attached.
+  for (const badName of ['../../-/npm/v1/tokens', 'x/../y', 'a/b/c']) {
+    const distTagsGuard = await service.npmDistTags({ name: badName }).catch((error) => error)
+    assert.equal(serializeError(distTagsGuard).code, 'ENAME', `dist-tags must reject ${badName}`)
+    const deleteGuard = await service.npmDeleteTag({ name: badName, tag: 'latest' }).catch((error) => error)
+    assert.equal(serializeError(deleteGuard).code, 'ENAME', `delete-dist-tag must reject ${badName}`)
+  }
+  log('package names are validated before becoming URL paths')
+
+  // A bad dist-tag must fail the preflight too, not just the real publish.
+  const badTagDry = await service.publish({ dir: fixture, targets: ['npm'], tag: '-bad', dryRun: true }).catch((error) => error)
+  assert.equal(serializeError(badTagDry).code, 'ETAGINVALID')
+  let badPrefs = null
+  try {
+    service.setPrefs({ tag: '-bad' })
+  } catch (error) {
+    badPrefs = error
+  }
+  assert.equal(serializeError(badPrefs).code, 'ETAGINVALID')
+  log('invalid dist-tag is rejected in preflight and in preferences')
+
+  // An unparseable range must not be reported as "no version matches", which
+  // would tempt the caller to retry with `*` and deprecate every version.
+  const badRange = await service.npmDeprecate({ name: '@acme/demo-pkg', range: 'not-a-range', message: 'x', otp: '123456' }).catch((error) => error)
+  assert.equal(serializeError(badRange).code, 'EINVALIDRANGE')
+  log('invalid semver range reports EINVALIDRANGE, not ENOVERSIONS')
+
+  // Proxy credentials must never reach the panel or the model.
+  const previousProxy = process.env.HTTPS_PROXY
+  process.env.HTTPS_PROXY = 'http://alice:s3cret@proxy.local:8080'
+  try {
+    const proxied = await service.diagnostics({})
+    const serialized = JSON.stringify(proxied.network)
+    assert.equal(serialized.includes('s3cret'), false, 'proxy password leaked')
+    assert.equal(serialized.includes('alice'), false, 'proxy username leaked')
+  } finally {
+    if (previousProxy === undefined) delete process.env.HTTPS_PROXY
+    else process.env.HTTPS_PROXY = previousProxy
+  }
+  log('proxy credentials are redacted from diagnostics')
 
   const diagnostics = await service.diagnostics({ ping: true })
   assert.equal(diagnostics.ping.npm.ok, true)

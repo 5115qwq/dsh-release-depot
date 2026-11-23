@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.6'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.8'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -697,6 +697,14 @@ window.__ModuleLoader__.load({
       }
       if (loading || status === null) {
         return { text: t('正在读取账号与本地记录…', 'Reading accounts and local history…') }
+      }
+      if (status.authCorrupt === true) {
+        return {
+          text: t('本机凭据文件已损坏，无法读取已保存的 Token（原文件仍然保留，没有被覆盖）。请重新连接 npm 或 GitHub。',
+            'The local credential file is corrupted, so the saved tokens could not be read (the original file is kept). Please reconnect npm or GitHub.'),
+          actionLabel: t('重新连接', 'Reconnect'),
+          action: () => setTabAndScroll('packages'),
+        }
       }
       const npm = status.npm?.connected === true
       const github = status.github?.connected === true
@@ -1801,7 +1809,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.6', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.8', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),
