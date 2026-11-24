@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 h('strong', null, t('仅本机凭据', 'Local credentials only')),
                 h('span', null, t('令牌只保存在 DSH home。', 'Tokens stay in your DSH home.')))),
-            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.1.11'}`), h('span', null, t('本地运行', 'local runtime')))),
+            h('div', { className: 'sd-side-foot' }, h('span', null, `v${status?.version ?? '1.2.0'}`), h('span', null, t('本地运行', 'local runtime')))),
           h('main', { className: 'sd-main' },
             h('header', { className: 'sd-top' },
               h('div', { className: 'sd-crumb' },
@@ -1459,7 +1459,7 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(true)
       const [reposError, setReposError] = React.useState(null)
       const [query, setQuery] = React.useState('')
-      const [form, setForm] = React.useState({ name: '', private: true, description: '', org: '' })
+      const [form, setForm] = React.useState({ name: '', private: false, description: '', org: '' })
       const [creating, setCreating] = React.useState(false)
       const connected = status?.github?.connected === true
 
@@ -1494,7 +1494,7 @@ window.__ModuleLoader__.load({
             org: form.org.trim(),
           })
           toast(t(`已创建 ${result.repo.fullName}`, `Created ${result.repo.fullName}`), 'ok')
-          setForm({ name: '', private: true, description: '', org: '' })
+          setForm({ name: '', private: false, description: '', org: '' })
           await load(true)
           refreshStatus()
         } catch (error) {
@@ -1865,7 +1865,7 @@ window.__ModuleLoader__.load({
         form.open
           ? h('div', { className: 'sd-inline-form sd-inline-card' },
             h('div', { className: 'sd-field-grid' },
-              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.1.11', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
+              h(Field, { label: 'Tag' }, h(TextInput, { value: form.tag, placeholder: 'v1.2.0', onChange: (event) => setForm({ ...form, tag: event.target.value }) })),
               h(Field, { label: t('标题', 'Title'), optional: true }, h(TextInput, { value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }) }))),
             h(Field, { label: t('说明', 'Notes'), optional: true },
               h('textarea', { className: 'sd-input sd-textarea', rows: 3, value: form.body, onChange: (event) => setForm({ ...form, body: event.target.value }) })),
@@ -2379,7 +2379,7 @@ window.__ModuleLoader__.load({
         owner: status?.github?.login ?? '',
         repo: '',
         create: true,
-        private: true,
+        private: false,
         branch: '',
         releaseTag: '',
         releaseName: '',
@@ -2702,8 +2702,12 @@ window.__ModuleLoader__.load({
                   dry.record.targets.map((target) => h('div', { key: target.target, className: 'sd-purpose' },
                     h('div', { className: 'sd-purpose-head' },
                       h('strong', null, target.target),
-                      h(Chip, { tone: target.ok ? 'ok' : 'danger' }, target.ok ? (target.dryRun ? 'preflight ok' : 'ok') : 'fail')),
+                      h(Chip, { tone: target.ok ? 'ok' : 'danger' }, target.ok ? (target.dryRun ? 'preflight ok' : 'ok') : 'fail'),
+                      target.skipped === true ? h(Chip, { tone: 'plain' }, t('将跳过', 'will skip')) : null),
                     target.error ? h('div', { className: 'sd-purpose-error' }, target.error.message) : null,
+                    Array.isArray(target.warnings) && target.warnings.length > 0
+                      ? h('ul', { className: 'sd-warn-list' }, target.warnings.map((warning, index) => h('li', { key: index }, warning)))
+                      : null,
                     target.existing ? h('div', { className: 'sd-field-hint' },
                       `existing: latest=${target.existing.latest ?? '—'} · versions=${target.existing.versionCount ?? 0}`) : null,
                     target.repoExists === false ? h('div', { className: 'sd-field-hint' }, t('仓库不存在', 'repository missing')) : null,
@@ -2736,6 +2740,7 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sd-purpose-head' },
                 h('strong', null, target.target),
                 h(Chip, { tone: target.ok ? 'ok' : 'danger' }, target.ok ? 'ok' : 'fail'),
+                target.skipped === true ? h(Chip, { tone: 'plain' }, t('已存在·跳过', 'already published')) : null,
                 target.pending === true ? h(Chip, { tone: 'warn' }, t('同步中', 'syncing')) : null),
               h('div', { className: 'sd-record-links' },
                 target.url ? h('a', { className: 'sd-link', href: target.url, target: '_blank', rel: 'noopener noreferrer' }, 'npm package') : null,

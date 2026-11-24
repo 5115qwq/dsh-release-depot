@@ -111,17 +111,37 @@ try {
   assert.equal(demo.version, '1.2.3')
   log('account package list reads identity and latest versions')
 
-  // A second publish must be rejected BEFORE hitting the registry, so the
-  // caller learns immediately instead of after a round-trip that 409s.
+  // Republishing the identical artifact is idempotent: a partially successful
+  // publish (npm done, GitHub failed) must be retryable. No PUT is attempted.
   const requestsBefore = registry.state.requests.length
-  const conflict = await service.publish({ dir: fixture, targets: ['npm'], otp: '123456' })
-  assert.equal(conflict.ok, false)
-  assert.equal(conflict.record.targets[0].error.code, 'EVERSIONEXISTS')
+  const retry = await service.publish({ dir: fixture, targets: ['npm'], otp: '123456' })
+  assert.equal(retry.ok, true, 'an identical republish should be skipped, not failed')
+  assert.equal(retry.record.targets[0].skipped, true)
+  assert.match(String(retry.record.targets[0].warnings[0]), /跳过/)
   const putAttempts = registry.state.requests
     .slice(requestsBefore)
     .filter((entry) => entry.method === 'PUT').length
-  assert.equal(putAttempts, 0, 'an existing version must not reach the registry PUT')
-  log('republishing an existing version is rejected before any PUT')
+  assert.equal(putAttempts, 0, 'an existing identical version must not reach the registry PUT')
+  log('republishing an identical artifact is idempotent (skipped, no PUT)')
+
+  // The preflight must predict what the real run does. For an identical
+  // republish the real run SKIPS, so a preflight reporting failure would
+  // contradict it and block the publish button for no reason.
+  const dryRetry = await service.publish({ dir: fixture, targets: ['npm'], otp: '123456', dryRun: true })
+  assert.equal(dryRetry.ok, true, 'preflight must not fail when the real run would skip')
+  assert.equal(dryRetry.record.targets[0].skipped, true)
+  assert.match(String(dryRetry.record.targets[0].warnings[0]), /跳过/)
+  log('preflight predicts the idempotent skip')
+
+  // A *different* artifact on the same version is a real conflict and must fail.
+  const tamperedFixture = await makeFixture('1.2.3')
+  // `files` whitelists lib/README, so touch a shipped file to change the bytes.
+  await writeFile(join(tamperedFixture, 'lib', 'index.js'), 'export const x = 999\n')
+  const conflict = await service.publish({ dir: tamperedFixture, targets: ['npm'], otp: '123456' })
+  assert.equal(conflict.ok, false, 'a different artifact on an existing version must be rejected')
+  assert.equal(conflict.record.targets[0].error.code, 'EVERSIONEXISTS')
+  log('a different artifact on an existing version is rejected')
+
 
   const tags = await service.npmSetTag({ name: '@acme/demo-pkg', tag: 'next', version: '1.2.3', otp: '123456' })
   assert.equal(tags.ok, true)
@@ -198,30 +218,80 @@ try {
   assert.equal(service.githubPublicStatus().scopes.join(','), 'repo,workflow')
   log('GitHub PAT verified and stored without exposure')
 
+  // A partially successful publish (npm ok, GitHub failed) must be retryable as
+  // a whole: npm is skipped when the artifact is identical, GitHub is retried.
+  const retryDir = await mkdtemp(join(tmpdir(), 'ship-retry-'))
+  createdFixtures.push(retryDir)
+  await writeFile(join(retryDir, 'package.json'), JSON.stringify({ name: '@acme/retry-pkg', version: '1.0.0', description: 'd' }))
+  await writeFile(join(retryDir, 'i.js'), 'x\n')
+  const partial = await service.publish({
+    dir: retryDir,
+    targets: ['npm', 'github-release'],
+    otp: '123456',
+    github: { owner: 'shiptester', repo: 'retry-missing-repo', create: false },
+  })
+  assert.equal(partial.ok, false)
+  assert.equal(partial.record.targets[0].ok, true, 'npm should have succeeded')
+  assert.equal(partial.record.targets[1].error.code, 'ENOREPO')
+
+  const retried = await service.publish({
+    dir: retryDir,
+    targets: ['npm', 'github-release'],
+    otp: '123456',
+    github: { owner: 'shiptester', repo: 'retry-ok-repo', create: true },
+  })
+  assert.equal(retried.ok, true, 'retrying must not fail on the already-published npm version')
+  assert.equal(retried.record.targets[0].skipped, true, 'npm must be skipped when the artifact is identical')
+  assert.equal(retried.record.targets[1].ok, true, 'the previously failed target must now run')
+  log('a partially successful publish can be retried as a whole')
+
+  // A full retry must also survive the release already existing: the tag was
+  // created by the first attempt, so createRelease would 422 without reuse.
+  const releaseRetryDir = await mkdtemp(join(tmpdir(), 'ship-relretry-'))
+  createdFixtures.push(releaseRetryDir)
+  await writeFile(join(releaseRetryDir, 'package.json'), JSON.stringify({ name: '@acme/relretry-pkg', version: '1.0.0', description: 'd' }))
+  await writeFile(join(releaseRetryDir, 'i.js'), 'x\n')
+  const relOpts = { owner: 'shiptester', repo: 'relretry-repo', create: true, allowRemove: true, attachTarball: true }
+  const firstRun = await service.publish({
+    dir: releaseRetryDir, targets: ['npm', 'github-release'], otp: '123456', github: relOpts,
+  })
+  assert.equal(firstRun.ok, true, JSON.stringify(firstRun.record.targets.map((t) => t.error?.code)))
+  const secondRun = await service.publish({
+    dir: releaseRetryDir, targets: ['npm', 'github-release'], otp: '123456', github: relOpts,
+  })
+  assert.equal(secondRun.ok, true, 'a full retry must not fail on the existing release')
+  assert.equal(secondRun.record.targets[0].skipped, true, 'npm must be skipped on retry')
+  log('retrying a completed publish reuses the existing release')
+
   const repos = await service.githubRepos({ refresh: true })
   assert.equal(repos.items[0].fullName, 'shiptester/demo-repo')
   log('GitHub repository list works')
 
+  const commitsBeforePush = github.state.commits.length
   const push = await service.githubPush({
     owner: 'shiptester', repo: 'demo-repo', dir: fixture2, branch: 'main', create: false,
   })
   assert.equal(push.ok, true)
   assert.equal(push.fileCount, preview.fileCount)
-  assert.equal(github.state.commits.length, 1)
+  assert.equal(github.state.commits.length, commitsBeforePush + 1)
   assert.equal(github.state.refs.get('demo-repo:main'), push.commitSha)
-  assert.equal(github.state.trees[0].tree.length, preview.fileCount)
+  const lastTree = github.state.trees[github.state.trees.length - 1]
+  assert.equal(lastTree.tree.length, preview.fileCount)
   log('GitHub push creates blobs, a tree, a commit and the branch ref')
 
+  const assetsBefore = github.state.assets.length
+  const releasesBefore = (await service.githubReleases({ owner: 'shiptester', repo: 'demo-repo' })).items.length
   const release = await service.githubRelease({
     owner: 'shiptester', repo: 'demo-repo', tag: 'v1.2.4', name: 'Demo v1.2.4', body: 'notes', assetDir: fixture2,
   })
   assert.equal(release.ok, true)
-  assert.equal(github.state.assets.length, 1)
-  assert.ok(github.state.assets[0].data.length > 0)
+  assert.equal(github.state.assets.length, assetsBefore + 1)
+  assert.ok(github.state.assets[github.state.assets.length - 1].data.length > 0)
   const releaseList = await service.githubReleases({ owner: 'shiptester', repo: 'demo-repo' })
-  assert.equal(releaseList.items.length, 1)
+  assert.equal(releaseList.items.length, releasesBefore + 1)
   await service.githubDeleteRelease({ owner: 'shiptester', repo: 'demo-repo', releaseId: releaseList.items[0].id, force: true })
-  assert.equal(github.state.releases.size, 0)
+  const remaining = await service.githubReleases({ owner: 'shiptester', repo: 'demo-repo' })
+  assert.equal(remaining.items.length, releasesBefore)
   log('release creation, asset upload, listing and deletion work')
 
   const pipeline = await service.publish({
@@ -585,12 +655,22 @@ try {
   const guardDir = await mkdtemp(join(tmpdir(), 'ship-toolok-'))
   createdFixtures.push(guardDir)
   await writeFile(join(guardDir, 'package.json'), JSON.stringify({ name: '@acme/toolok-pkg', version: '1.0.0', description: 'd' }))
+  await writeFile(join(guardDir, 'index.js'), 'export const a = 1\n')
   const toolList2 = createTools(service, {}, { toolPaths: [guardDir] })
   const npmPublish = toolList2.find((tool) => tool.name === 'npm_publish')
   const firstOk = await npmPublish.execute({ dir: guardDir, otp: '123456' })
   assert.equal(firstOk.ok, true, JSON.stringify(firstOk.summary))
+
+  // An identical retry is idempotent (skipped), so it must still be ok:true.
+  const retryOk = await npmPublish.execute({ dir: guardDir, otp: '123456' })
+  assert.equal(retryOk.ok, true, 'an identical retry is a skip, not a failure')
+  assert.match(String(retryOk.summary), /跳过/)
+
+  // Changing the shipped bytes makes the same version a real conflict, and that
+  // must surface as ok:false so a caller reading only `ok` does not miss it.
+  await writeFile(join(guardDir, 'index.js'), 'export const a = 2\n')
   const secondFail = await npmPublish.execute({ dir: guardDir, otp: '123456' })
-  assert.equal(secondFail.ok, false, 'a failed publish must report ok:false at the tool level')
+  assert.equal(secondFail.ok, false, 'a real conflict must report ok:false at the tool level')
   assert.match(String(secondFail.summary), /失败/)
   assert.equal(secondFail.data.record.targets[0].error.code, 'EVERSIONEXISTS')
   log('tool ok reflects publish success, not just absence of a throw')
